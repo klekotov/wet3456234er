@@ -1,6 +1,7 @@
 import sys
 import os
 import time
+import shutil
 
 # Устанавливаем базовые зависимости перед импортом Utils.cardinal_tools.
 # Одна попытка автозагрузки на пакет: если pip не смог (нет сети/прав/несовместимость),
@@ -52,7 +53,7 @@ _bootstrap_pip()
 try:
     import Utils.cardinal_tools
     import Utils.config_loader as cfg_loader
-    from first_setup import first_setup
+    from first_setup import first_setup, setup_from_env
     from colorama import Fore, Style
     from Utils.logger import LOGGER_CONFIG
     import logging.config
@@ -86,6 +87,64 @@ if getattr(sys, 'frozen', False):
 else:
     os.chdir(os.path.dirname(__file__))
 
+
+def _copy_missing(src: str, dst: str) -> None:
+    """Копирует файлы из src в dst, не перезаписывая существующие."""
+    for root, _dirs, filenames in os.walk(src):
+        rel = os.path.relpath(root, src)
+        target_dir = dst if rel == "." else os.path.join(dst, rel)
+        os.makedirs(target_dir, exist_ok=True)
+        for name in filenames:
+            target = os.path.join(target_dir, name)
+            if not os.path.exists(target):
+                try:
+                    shutil.copy2(os.path.join(root, name), target)
+                except OSError:
+                    pass
+
+
+def _setup_persistent_data() -> None:
+    """
+    Хранит изменяемые данные в каталоге ``DATA_DIR`` (на хостингах вроде Bothost
+    это ``/app/data``, который сохраняется между пересборками контейнера).
+
+    Каталоги ``configs``, ``storage``, ``plugins`` и ``logs`` заменяются
+    символическими ссылками на ``DATA_DIR/<name>``. Если ссылку создать нельзя,
+    бот продолжает работать с локальными каталогами.
+    """
+    data_dir = os.getenv("DATA_DIR")
+
+    if not data_dir:
+        return
+
+    try:
+        os.makedirs(data_dir, exist_ok=True)
+    except OSError as ex:
+        print(f"[DATA_DIR] не удалось создать {data_dir}: {ex}")
+        return
+
+    for name in ("configs", "storage", "plugins", "logs"):
+        target = os.path.join(data_dir, name)
+        local = name
+
+        try:
+            os.makedirs(target, exist_ok=True)
+
+            if os.path.islink(local):
+                if os.path.realpath(local) == os.path.realpath(target):
+                    continue
+                os.unlink(local)
+            elif os.path.isdir(local):
+                _copy_missing(local, target)
+                shutil.rmtree(local, ignore_errors=True)
+
+            os.symlink(target, local, target_is_directory=True)
+        except OSError as ex:
+            print(f"[DATA_DIR] каталог {name} останется локальным: {ex}")
+
+
+_setup_persistent_data()
+
 folders = ["configs", "logs", "storage", "storage/cache", "storage/products", "plugins"]
 for i in folders:
     if not os.path.exists(i):
@@ -109,8 +168,26 @@ logger = logging.getLogger("main")
 print(f"{Style.RESET_ALL}{build_banner(VERSION)}")
 
 if not os.path.exists("configs/_main.cfg"):
-    first_setup()
-    sys.exit()
+    # На хостинге (Bothost и др.) интерактивной консоли нет — пробуем собрать
+    # конфиг из переменных окружения.
+    if setup_from_env():
+        pass
+    elif not sys.stdin or not sys.stdin.isatty():
+        print()
+        print("=" * 62)
+        print("  Не найден файл конфигурации configs/_main.cfg")
+        print()
+        print("  На хостинге задайте переменные окружения и перезапустите бота:")
+        print("    POC_PLAYEROK_TOKEN — токен аккаунта Playerok")
+        print("    BOT_TOKEN          — токен Telegram-бота (Bothost передаёт сам)")
+        print("    POC_PASSWORD       — пароль для входа в Telegram-бота")
+        print()
+        print("  Либо один раз запустите бота в интерактивном терминале.")
+        print("=" * 62)
+        sys.exit(1)
+    else:
+        first_setup()
+        sys.exit()
 
 if sys.platform == "linux" and os.getenv('POC_IS_RUNNING_AS_SERVICE', '0') == '1':
     import getpass
