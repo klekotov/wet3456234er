@@ -255,3 +255,71 @@ def first_setup():
     time.sleep(5)
 
 
+
+
+def _env(*names: str) -> str:
+    for name in names:
+        value = (os.getenv(name) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def setup_from_env() -> bool:
+    """
+    Создаёт ``configs/_main.cfg`` из переменных окружения — для хостингов
+    (Bothost и подобных), где нет интерактивного терминала.
+
+    Переменные:
+      * ``POC_PLAYEROK_TOKEN`` / ``PLAYEROK_TOKEN`` — токен Playerok (обязательно);
+      * ``BOT_TOKEN`` / ``TELEGRAM_BOT_TOKEN`` — токен Telegram-бота (обязательно);
+      * ``POC_PASSWORD`` — пароль для входа в Telegram-бот; если не задан,
+        генерируется случайный и печатается в лог;
+      * ``POC_USER_AGENT`` — User-Agent (необязательно).
+
+    :return: ``True``, если конфиг создан.
+    """
+
+    playerok_token = _env("POC_PLAYEROK_TOKEN", "PLAYEROK_TOKEN")
+    tg_token = _env("BOT_TOKEN", "TELEGRAM_BOT_TOKEN", "POC_TG_TOKEN")
+
+    if not playerok_token or not tg_token:
+        return False
+
+    import secrets
+    import string
+
+    password = _env("POC_PASSWORD", "POC_BOT_PASSWORD")
+    generated = False
+    if not password:
+        alphabet = string.ascii_letters + string.digits
+        password = "".join(secrets.choice(alphabet) for _ in range(14)) + "1A"
+        generated = True
+
+    config = ConfigParser(delimiters=(":",), interpolation=None)
+    config.optionxform = str
+
+    for section, values in default_config.items():
+        config[section] = dict(values)
+
+    config.set("Playerok", "token", playerok_token)
+    user_agent = _env("POC_USER_AGENT")
+    if user_agent:
+        config.set("Playerok", "user_agent", user_agent)
+
+    config.set("Telegram", "enabled", "1")
+    config.set("Telegram", "token", tg_token)
+    config.set("Telegram", "secretKeyHash", hash_password(password))
+
+    os.makedirs("configs", exist_ok=True)
+    with open("configs/_main.cfg", "w", encoding="utf-8") as f:
+        config.write(f)
+
+    print(f"{Fore.GREEN}{Style.BRIGHT}✓ Конфиг создан из переменных окружения: configs/_main.cfg{Style.RESET_ALL}")
+    if generated:
+        print(
+            f"{Fore.YELLOW}{Style.BRIGHT}Пароль для входа в Telegram-бота: {password}{Style.RESET_ALL}\n"
+            f"{Fore.YELLOW}Задайте его в переменной окружения POC_PASSWORD, "
+            f"чтобы пароль не менялся.{Style.RESET_ALL}"
+        )
+    return True

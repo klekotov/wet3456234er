@@ -78,6 +78,19 @@
 
 Арендовать виртуальный сервер можно на [Bhost.fun](https://bhost.fun/r/7777777)
 
+### 🧱 Структура репозитория
+
+Код бота лежит в корне репозитория: `main.py` (точка входа), `requirements.txt`
+и каталоги `PlayerokAPI/`, `Utils/`, `tg_bot/`, `locales/`, `scripts/`, `configs/`.
+Главный файл для хостинга — `main.py`.
+
+### ☁️ Хостинг ботов (Bothost)
+
+Пошаговая инструкция: [BOTHOST.md](BOTHOST.md). Кратко: язык Python, главный файл
+`main.py`, переменные окружения `POC_PLAYEROK_TOKEN` и `POC_PASSWORD` (`BOT_TOKEN`
+передаёт хостинг). Данные (`configs`, `storage`, `plugins`, `logs`) хранятся в
+`DATA_DIR` и не теряются при пересборке.
+
 ### 🔷 Windows
 
 1. Скачайте и установите Python 3.11.0.

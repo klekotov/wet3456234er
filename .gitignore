@@ -1,0 +1,20 @@
+__pycache__/
+*.pyc
+*.pyo
+
+# Логи
+logs/*.log
+logs/*.log.*
+
+# Данные бота (товары, кэш, настройки автоматизации)
+storage/
+plugins/
+
+# Виртуальные окружения
+venv/
+.venv/
+env/
+
+# Локальные секреты
+.env
+configs/_main.cfg
