@@ -1,0 +1,10 @@
+{
+    "enabled": false,
+    "interval": 86400,
+    "last_time": "",
+    "credentials_type": "",
+    "card_id": "",
+    "sbp_bank_id": "",
+    "sbp_phone_number": "",
+    "usdt_address": ""
+}
