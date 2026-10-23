@@ -10,8 +10,8 @@ import tempfile
 import shutil
 import uuid
 
-import tls_requests
 import curl_cffi
+import requests
 
 from . import types
 from .exceptions import *
@@ -24,6 +24,83 @@ from .misc import (
 
 
 logger = getLogger("playerokapi")
+
+
+def build_multipart(
+    files: dict,
+    data: dict | None = None
+) -> tuple[bytes, str]:
+    """
+    Собирает тело запроса ``multipart/form-data``.
+
+    Используется вместо ``requests``-совместимого параметра ``files``,
+    который поддерживается не всеми версиями ``curl_cffi``.
+
+    :param files: Словарь с файлами (``field`` -> файл, байты или кортеж).
+    :param data: Обычные текстовые поля формы.
+
+    :return: Кортеж (тело запроса, значение заголовка ``Content-Type``).
+    :rtype: `tuple[bytes, str]`
+    """
+
+    boundary = f"----PlayerokCardinalBoundary{uuid.uuid4().hex}"
+    chunks: list[bytes] = []
+
+    def add_field(name: str, value) -> None:
+        chunks.append(f"--{boundary}\r\n".encode())
+        chunks.append(
+            f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode()
+        )
+        chunks.append(str(value).encode("utf-8"))
+        chunks.append(b"\r\n")
+
+    def add_file(name: str, value) -> None:
+        filename = None
+        content_type = "application/octet-stream"
+        payload = value
+
+        if isinstance(value, (list, tuple)):
+            value = list(value)
+            filename = value[0]
+            payload = value[1] if len(value) > 1 else b""
+            if len(value) > 2 and value[2]:
+                content_type = value[2]
+
+        if hasattr(payload, "read"):
+            if filename is None:
+                filename = getattr(payload, "name", None)
+            payload = payload.read()
+
+        if isinstance(payload, str):
+            payload = payload.encode("utf-8")
+        elif not isinstance(payload, (bytes, bytearray)):
+            payload = str(payload).encode("utf-8")
+
+        if not filename or not isinstance(filename, str):
+            filename = "file"
+        filename = os.path.basename(filename).replace('"', "")
+
+        chunks.append(f"--{boundary}\r\n".encode())
+        chunks.append(
+            (
+                'Content-Disposition: form-data; name="{}"; filename="{}"\r\n'
+                "Content-Type: {}\r\n\r\n"
+            ).format(name, filename, content_type).encode("utf-8")
+        )
+        chunks.append(bytes(payload))
+        chunks.append(b"\r\n")
+
+    for name, value in (data or {}).items():
+        for item in (value if isinstance(value, (list, tuple)) else [value]):
+            add_field(name, item)
+
+    for name, value in files.items():
+        for item in (value if isinstance(value, list) else [value]):
+            add_file(name, item)
+
+    chunks.append(f"--{boundary}--\r\n".encode())
+
+    return b"".join(chunks), f"multipart/form-data; boundary={boundary}"
 
 
 def get_account() -> Account | None:
@@ -156,9 +233,6 @@ class Account:
         apply_fp_compat(self)
 
     def _refresh_clients(self):
-        self.__tls_requests = tls_requests.Client(
-            proxy=self.__proxy_string
-        )
         self.__curl_session = curl_cffi.Session(
             impersonate="chrome",
             timeout=self.requests_timeout,
@@ -243,12 +317,16 @@ class Account:
                         )
                     elif method == "post":
                         if files:
-                            r = self.__tls_requests.post(
-                                url=url, 
-                                json=payload if not files else None, 
-                                data=payload if files else None, 
-                                headers=headers, 
-                                files=files, 
+                            body, content_type = build_multipart(files, payload)
+                            multipart_headers = {
+                                k: v for k, v in headers.items()
+                                if k.lower() != "content-type"
+                            }
+                            multipart_headers["content-type"] = content_type
+                            r = self.__curl_session.post(
+                                url=url,
+                                data=body,
+                                headers=multipart_headers,
                                 timeout=self.requests_timeout
                             )
                         else:

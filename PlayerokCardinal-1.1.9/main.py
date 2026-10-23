@@ -23,18 +23,33 @@ while True:
     except ModuleNotFoundError:
         main(["install", "-U", "psutil>=5.9.4"])
 
-import Utils.cardinal_tools
-import Utils.config_loader as cfg_loader
-from first_setup import first_setup
-from colorama import Fore, Style
-from Utils.logger import LOGGER_CONFIG
-import logging.config
-import colorama
 import sys
 import os
-from cardinal import Cardinal
-import Utils.exceptions as excs
-from Utils.banner import build_banner
+
+try:
+    import Utils.cardinal_tools
+    import Utils.config_loader as cfg_loader
+    from first_setup import first_setup
+    from colorama import Fore, Style
+    from Utils.logger import LOGGER_CONFIG
+    import logging.config
+    import colorama
+    from cardinal import Cardinal
+    import Utils.exceptions as excs
+    from Utils.banner import build_banner
+except ModuleNotFoundError as ex:
+    missing = getattr(ex, "name", None) or str(ex)
+    print()
+    print("=" * 62)
+    print(f"  Не хватает зависимости: {missing}")
+    print()
+    print("  Установите зависимости тем же Python, которым запускается бот:")
+    print(f'    "{sys.executable}" -m pip install -U -r requirements.txt')
+    print()
+    print("  Диагностика окружения:")
+    print(f'    "{sys.executable}" scripts/check_env.py')
+    print("=" * 62)
+    sys.exit(1)
 
 VERSION = "1.1.9"
 

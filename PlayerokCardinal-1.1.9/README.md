@@ -93,6 +93,21 @@
 1. Выполните команду: `wget https://raw.githubusercontent.com/KaDerix/PlayerokCardinal/main/install-poc.sh -O install-poc.sh && bash install-poc.sh`
 2. Следуйте инструкциям установщика. Данный скрипт автоматически установит всё необходимое и запустит бота как фоновый процесс.
 
+## 🩺 Диагностика и типичные ошибки
+
+**`ModuleNotFoundError: No module named '...'`** — у того Python, которым запускается бот, не установлены зависимости
+(частая причина: `pip install` сделан в другом окружении). Проверить и исправить:
+
+```bash
+# Linux: тем же интерпретатором, что и в сервисе (/home/<user>/pyvenv/bin/python)
+/home/<user>/pyvenv/bin/python scripts/check_env.py
+/home/<user>/pyvenv/bin/python -m pip install -U -r requirements.txt
+```
+
+На сервере, установленном через `install-poc.sh`, то же самое делает `sudo pocctl doctor`.
+
+**Windows:** откройте `Setup.bat` (он ставит зависимости в тот же Python, из которого запускается `Start.bat`).
+
 ## 🔌 Установка плагинов
 
 Не устанавливайте плагины из непроверенных источников. Через систему плагинов злоумышленники могут получить полный доступ к Вашему устройству или аккаунту Playerok. Установка плагинов крайне проста.
