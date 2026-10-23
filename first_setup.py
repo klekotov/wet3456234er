@@ -257,6 +257,11 @@ def first_setup():
 
 
 
+PLAYEROK_TOKEN_VARS = ("POC_PLAYEROK_TOKEN", "PLAYEROK_TOKEN", "POC_TOKEN")
+TG_TOKEN_VARS = ("BOT_TOKEN", "TELEGRAM_BOT_TOKEN", "API_TOKEN", "POC_TG_TOKEN")
+PASSWORD_VARS = ("POC_PASSWORD", "POC_BOT_PASSWORD", "BOT_PASSWORD")
+
+
 def _env(*names: str) -> str:
     for name in names:
         value = (os.getenv(name) or "").strip()
@@ -265,14 +270,56 @@ def _env(*names: str) -> str:
     return ""
 
 
+def _mask(value: str) -> str:
+    """Короткое безопасное описание значения переменной для логов."""
+    if not value:
+        return "не задана"
+    if len(value) <= 8:
+        return f"задана ({len(value)} симв.)"
+    return f"задана (…{value[-4:]}, {len(value)} симв.)"
+
+
+def env_diagnostics() -> list[str]:
+    """
+    Возвращает человекочитаемую диагностику окружения: какие переменные видны
+    процессу, куда указывает каталог ``configs`` и что в нём лежит.
+
+    Нужна для разбора ситуации «конфиг не найден» на хостинге без терминала.
+    """
+
+    lines: list[str] = []
+
+    data_dir = os.getenv("DATA_DIR", "")
+    lines.append(f"DATA_DIR: {data_dir or 'не задана'}")
+
+    configs_path = os.path.abspath("configs")
+    real = os.path.realpath(configs_path)
+    kind = "симлинк" if os.path.islink(configs_path) else "каталог"
+    lines.append(f"configs: {kind} -> {real}")
+
+    try:
+        files = sorted(os.listdir(configs_path))
+    except OSError as ex:
+        files = [f"<ошибка чтения: {ex}>"]
+    lines.append(f"файлы в configs: {', '.join(files) if files else 'пусто'}")
+
+    lines.append(f"POC_PLAYEROK_TOKEN: {_mask(_env(*PLAYEROK_TOKEN_VARS))}")
+    lines.append(f"BOT_TOKEN: {_mask(_env(*TG_TOKEN_VARS))}")
+    lines.append(f"POC_PASSWORD: {_mask(_env(*PASSWORD_VARS))}")
+
+    return lines
+
+
 def setup_from_env() -> bool:
     """
     Создаёт ``configs/_main.cfg`` из переменных окружения — для хостингов
     (Bothost и подобных), где нет интерактивного терминала.
 
     Переменные:
-      * ``POC_PLAYEROK_TOKEN`` / ``PLAYEROK_TOKEN`` — токен Playerok (обязательно);
-      * ``BOT_TOKEN`` / ``TELEGRAM_BOT_TOKEN`` — токен Telegram-бота (обязательно);
+      * ``POC_PLAYEROK_TOKEN`` / ``PLAYEROK_TOKEN`` / ``POC_TOKEN`` — токен
+        Playerok (обязательно);
+      * ``BOT_TOKEN`` / ``TELEGRAM_BOT_TOKEN`` / ``API_TOKEN`` / ``POC_TG_TOKEN`` —
+        токен Telegram-бота (обязательно; на Bothost передаётся автоматически);
       * ``POC_PASSWORD`` — пароль для входа в Telegram-бот; если не задан,
         генерируется случайный и печатается в лог;
       * ``POC_USER_AGENT`` — User-Agent (необязательно).
@@ -280,8 +327,8 @@ def setup_from_env() -> bool:
     :return: ``True``, если конфиг создан.
     """
 
-    playerok_token = _env("POC_PLAYEROK_TOKEN", "PLAYEROK_TOKEN")
-    tg_token = _env("BOT_TOKEN", "TELEGRAM_BOT_TOKEN", "POC_TG_TOKEN")
+    playerok_token = _env(*PLAYEROK_TOKEN_VARS)
+    tg_token = _env(*TG_TOKEN_VARS)
 
     if not playerok_token or not tg_token:
         return False
@@ -289,7 +336,7 @@ def setup_from_env() -> bool:
     import secrets
     import string
 
-    password = _env("POC_PASSWORD", "POC_BOT_PASSWORD")
+    password = _env(*PASSWORD_VARS)
     generated = False
     if not password:
         alphabet = string.ascii_letters + string.digits

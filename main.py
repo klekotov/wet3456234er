@@ -53,7 +53,7 @@ _bootstrap_pip()
 try:
     import Utils.cardinal_tools
     import Utils.config_loader as cfg_loader
-    from first_setup import first_setup, setup_from_env
+    from first_setup import first_setup, setup_from_env, env_diagnostics
     from colorama import Fore, Style
     from Utils.logger import LOGGER_CONFIG
     import logging.config
@@ -178,10 +178,18 @@ if not os.path.exists("configs/_main.cfg"):
         print("  Не найден файл конфигурации configs/_main.cfg")
         print()
         print("  На хостинге задайте переменные окружения и перезапустите бота:")
-        print("    POC_PLAYEROK_TOKEN — токен аккаунта Playerok")
+        print("    POC_PLAYEROK_TOKEN — токен аккаунта Playerok (из Cookie)")
         print("    BOT_TOKEN          — токен Telegram-бота (Bothost передаёт сам)")
         print("    POC_PASSWORD       — пароль для входа в Telegram-бота")
         print()
+        print("  Что видит процесс сейчас:")
+        for line in env_diagnostics():
+            print(f"    {line}")
+        print()
+        print("  Частые причины:")
+        print("    * переменные добавлены, но бот не перезапущен — нажмите «Перезапустить»;")
+        print("    * не задан именно токен Playerok (BOT_TOKEN даёт сам Bothost);")
+        print("    * токен Playerok вставлен с пробелами/переносом строки.")
         print("  Либо один раз запустите бота в интерактивном терминале.")
         print("=" * 62)
         sys.exit(1)

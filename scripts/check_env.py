@@ -185,6 +185,50 @@ def check_backend() -> list[str]:
     return problems
 
 
+def check_config() -> list[str]:
+    problems: list[str] = []
+    print("\nКонфигурация и данные")
+
+    project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    os.chdir(project_dir)
+
+    configs = os.path.join(project_dir, "configs")
+    data_dir = os.getenv("DATA_DIR", "")
+
+    print(f"  DATA_DIR:   {data_dir or 'не задана'}")
+    if os.path.islink(configs):
+        _ok(f"configs -> {os.path.realpath(configs)}")
+    else:
+        _skip("configs — обычный каталог (данные не переживут пересборку)")
+
+    main_cfg = os.path.join(configs, "_main.cfg")
+    if os.path.exists(main_cfg):
+        _ok("configs/_main.cfg найден")
+    else:
+        _warn(
+            "configs/_main.cfg нет — бот соберёт его из переменных окружения:\n"
+            "         POC_PLAYEROK_TOKEN, BOT_TOKEN, POC_PASSWORD"
+        )
+
+    try:
+        from first_setup import env_diagnostics
+    except Exception as ex:
+        _fail(f"не удалось импортировать first_setup — {ex}")
+        return problems + ["first_setup"]
+
+    for line in env_diagnostics():
+        print(f"  {line}")
+
+    for name in ("storage", "storage/products", "plugins", "logs"):
+        path = os.path.join(project_dir, name)
+        if os.path.exists(path):
+            _ok(f"{name} — на месте")
+        else:
+            _skip(f"{name} — будет создан при запуске")
+
+    return problems
+
+
 def check_project() -> list[str]:
     problems: list[str] = []
     print("\nМодули проекта")
@@ -227,6 +271,7 @@ def main() -> int:
     problems += check_python()
     problems += check_packages()
     problems += check_backend()
+    problems += check_config()
     problems += check_project()
 
     print("\n" + "=" * 60)
