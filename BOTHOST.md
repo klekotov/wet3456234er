@@ -97,6 +97,20 @@ python scripts/check_env.py
 Скрипт покажет версию Python, установленные пакеты, выбранный HTTP-бэкенд и
 импорт модулей проекта. Если всё в порядке — в конце будет «Всё в порядке».
 
+## Плагин загрузки лотов (устанавливается сам)
+
+При старте бот копирует `plugin_pack/playerok_lots_loader.py` в `plugins/`
+(в `DATA_DIR/plugins`). Ничего нажимать не нужно: после «Обновить из Git» и
+перезапуска в Telegram появятся команды `/pk_lots`, `/pk_upload`,
+`/pk_template`, `/pk_cat`, `/pk_cover`, `/pk_raise`, `/pk_raise_now`.
+
+Ваши правки в `plugins/playerok_lots_loader.py` не затираются обновлениями —
+файл обновляется только если его не редактировали.
+
+Обложки лотов кладите в `storage/products/covers/` (или загружайте
+командой `/pk_cover 1`) — этот каталог внутри `DATA_DIR`, поэтому переживает
+пересборку контейнера.
+
 ## Типичные ошибки
 
 **`ModuleNotFoundError: No module named '...'`**
