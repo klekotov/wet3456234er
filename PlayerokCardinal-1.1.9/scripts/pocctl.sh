@@ -49,6 +49,7 @@ Playerok Cardinal — управление сервисом
   sudo pocctl logs      — последние 100 строк journalctl
   sudo pocctl update    — git pull + pip install + restart
   sudo pocctl health    — проверка версии, venv, websocket, сервиса
+  sudo pocctl doctor    — полная проверка зависимостей (scripts/check_env.py)
 
 Systemd unit: $(unit_name)
 Пользователь Linux (после @): ${POC_USER}
@@ -156,6 +157,19 @@ cmd_health() {
     fi
 }
 
+cmd_doctor() {
+    require_root doctor
+    if [[ ! -x "${POC_VENV}/bin/python" ]]; then
+        echo "Ошибка: не найден интерпретатор ${POC_VENV}/bin/python" >&2
+        exit 1
+    fi
+    if [[ ! -f "${POC_DIR}/scripts/check_env.py" ]]; then
+        echo "Ошибка: не найден ${POC_DIR}/scripts/check_env.py (обновите файлы бота)" >&2
+        exit 1
+    fi
+    sudo -u "${POC_USER}" "${POC_VENV}/bin/python" "${POC_DIR}/scripts/check_env.py"
+}
+
 main() {
     local cmd="${1:-}"
     case "${cmd}" in
@@ -166,6 +180,7 @@ main() {
         logs)    cmd_logs ;;
         update)  cmd_update ;;
         health)  cmd_health ;;
+        doctor)  cmd_doctor ;;
         -h|--help|help|"")
             usage
             [[ -z "${cmd}" ]] && exit 0
