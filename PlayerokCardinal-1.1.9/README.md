@@ -99,14 +99,20 @@
 (частая причина: `pip install` сделан в другом окружении). Проверить и исправить:
 
 ```bash
-# Linux: тем же интерпретатором, что и в сервисе (/home/<user>/pyvenv/bin/python)
-/home/<user>/pyvenv/bin/python scripts/check_env.py
-/home/<user>/pyvenv/bin/python -m pip install -U -r requirements.txt
+# тем же интерпретатором, что и в сервисе / контейнере
+python scripts/check_env.py
+python -m pip install -U -r requirements.txt
+python -m pip install -U -r requirements-tls.txt   # необязательно (см. ниже)
 ```
 
 На сервере, установленном через `install-poc.sh`, то же самое делает `sudo pocctl doctor`.
 
 **Windows:** откройте `Setup.bat` (он ставит зависимости в тот же Python, из которого запускается `Start.bat`).
+
+**Про `curl_cffi`.** Это рекомендуемый HTTP-бэкенд с TLS-фингерпринтом браузера, но он **не обязателен**:
+если пакет не ставится на вашем хосте (нет wheel под musl/старый glibc/нестандартная архитектура),
+бот всё равно запустится — на резервном бэкенде `requests`, с предупреждением в логе.
+Принудительный выбор бэкенда — переменная окружения `POC_HTTP_BACKEND` (`auto` / `curl_cffi` / `requests`).
 
 ## 🔌 Установка плагинов
 

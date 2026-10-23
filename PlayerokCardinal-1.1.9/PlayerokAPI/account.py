@@ -10,7 +10,6 @@ import tempfile
 import shutil
 import uuid
 
-import curl_cffi
 import requests
 
 from . import types
@@ -21,6 +20,7 @@ from .misc import (
     PERSISTED_QUERIES, 
     QUERIES
 )
+from .http_client import create_session
 
 
 logger = getLogger("playerokapi")
@@ -233,10 +233,9 @@ class Account:
         apply_fp_compat(self)
 
     def _refresh_clients(self):
-        self.__curl_session = curl_cffi.Session(
-            impersonate="chrome",
-            timeout=self.requests_timeout,
+        self.__curl_session, self.http_backend = create_session(
             proxy=self.__proxy_string,
+            timeout=self.requests_timeout,
             verify=self._tmp_cert_path
         )
 
