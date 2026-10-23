@@ -1,7 +1,9 @@
 import sys
 import os
 import time
+import json
 import shutil
+import hashlib
 
 # Устанавливаем базовые зависимости перед импортом Utils.cardinal_tools.
 # Одна попытка автозагрузки на пакет: если pip не смог (нет сети/прав/несовместимость),
@@ -149,6 +151,77 @@ folders = ["configs", "logs", "storage", "storage/cache", "storage/products", "p
 for i in folders:
     if not os.path.exists(i):
         os.makedirs(i)
+
+
+def _sync_plugin_pack() -> None:
+    """
+    Устанавливает плагины из ``plugin_pack/`` в ``plugins/``.
+
+    * нет файла в ``plugins/`` — копируем;
+    * файл есть и не редактировался — обновляем;
+    * файл правили вручную — не трогаем (манифест сохраняет прошлую версию).
+    """
+    src = "plugin_pack"
+    if not os.path.isdir(src):
+        return
+
+    manifest_path = "storage/cache/plugin_pack.json"
+    manifest: dict = {}
+    if os.path.exists(manifest_path):
+        try:
+            with open(manifest_path, "r", encoding="utf-8") as f:
+                manifest = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            manifest = {}
+
+    def _hash(path: str) -> str:
+        with open(path, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()
+
+    try:
+        os.makedirs("plugins", exist_ok=True)
+        files = [n for n in os.listdir(src) if n.endswith(".py")]
+    except OSError:
+        return
+
+    changed = False
+    for name in files:
+        source = os.path.join(src, name)
+        target = os.path.join("plugins", name)
+        try:
+            shipped = _hash(source)
+        except OSError:
+            continue
+
+        if not os.path.exists(target):
+            shutil.copy2(source, target)
+            manifest[name] = shipped
+            changed = True
+            continue
+
+        try:
+            local = _hash(target)
+        except OSError:
+            continue
+
+        if manifest.get(name) == local and local != shipped:
+            shutil.copy2(source, target)
+            manifest[name] = shipped
+            changed = True
+        elif manifest.get(name) is None and local == shipped:
+            manifest[name] = shipped
+            changed = True
+
+    if changed:
+        try:
+            os.makedirs("storage/cache", exist_ok=True)
+            with open(manifest_path, "w", encoding="utf-8") as f:
+                json.dump(manifest, f, indent=4, sort_keys=True)
+        except OSError:
+            pass
+
+
+_sync_plugin_pack()
 
 files = ["configs/auto_delivery.cfg", "configs/auto_response.cfg"]
 for i in files:

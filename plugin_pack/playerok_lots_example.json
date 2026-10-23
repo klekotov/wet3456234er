@@ -1,0 +1,29 @@
+{
+  "game_category_id": "ВСТАВЬТЕ_ID_КАТЕГОРИИ",
+  "obtaining_type_id": "ВСТАВЬТЕ_ID_СПОСОБА_ПОЛУЧЕНИЯ",
+  "publish": true,
+  "lots": [
+    {
+      "name": "Первый лот",
+      "price": 100,
+      "description": "Описание первого лота.",
+      "image": "1",
+      "options": {},
+      "data_fields": {
+        "Логин": "user1",
+        "Пароль": "pass1"
+      }
+    },
+    {
+      "name": "Второй лот",
+      "price": 150,
+      "description": "Описание второго лота.",
+      "image": "2",
+      "options": {},
+      "data_fields": {
+        "Логин": "user2",
+        "Пароль": "pass2"
+      }
+    }
+  ]
+}

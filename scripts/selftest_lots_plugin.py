@@ -1,0 +1,289 @@
+"""
+Самопроверка плагина Playerok Lots Loader без реального аккаунта Playerok.
+
+Запуск:  python scripts/selftest_lots_plugin.py
+"""
+from __future__ import annotations
+
+import json
+import os
+import sys
+import tempfile
+from types import SimpleNamespace
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+os.chdir(ROOT)
+
+from PlayerokAPI.enums import GameCategoryDataFieldTypes  # noqa: E402
+
+sys.path.insert(0, os.path.join(ROOT, "plugin_pack"))
+import playerok_lots_loader as plugin  # noqa: E402
+
+
+def _field(fid: str, label: str, required: bool = False, hidden: bool = False):
+    return SimpleNamespace(
+        id=fid,
+        label=label,
+        type=GameCategoryDataFieldTypes.ITEM_DATA,
+        input_type=None,
+        copyable=True,
+        hidden=hidden,
+        required=required,
+        value=None,
+    )
+
+
+class FakeAccount:
+    def __init__(self):
+        self.created: list[dict] = []
+        self.published: list[tuple[str, str]] = []
+        self.raised: list[tuple[str, str]] = []
+
+    def get_game_category(self, id=None, game_id=None, slug=None):
+        return SimpleNamespace(
+            id=id,
+            name="Тестовая категория",
+            slug="test-category",
+            options=[
+                SimpleNamespace(field="platform", label="Платформа", group="Платформа", value="PC"),
+                SimpleNamespace(field="region", label="Регион", group="Регион", value="RU"),
+            ],
+        )
+
+    def get_game_category_data_fields(self, category_id, obtaining_type_id, count=24, type=None,
+                                      after_cursor=None):
+        fields = [
+            _field("df-login", "Логин", required=True),
+            _field("df-pass", "Пароль", required=True, hidden=True),
+            _field("df-note", "Примечание"),
+        ]
+        return SimpleNamespace(
+            data_fields=fields,
+            page_info=SimpleNamespace(has_next_page=False, end_cursor=None),
+            total_count=len(fields),
+        )
+
+    def create_item(self, game_category_id, obtaining_type_id, name, price, description,
+                    options, data_fields, attachments=None):
+        item = SimpleNamespace(
+            id=f"item-{len(self.created) + 1}",
+            name=name,
+            price=price,
+            status="DRAFT",
+        )
+        self.created.append({
+            "game_category_id": game_category_id,
+            "obtaining_type_id": obtaining_type_id,
+            "name": name,
+            "price": price,
+            "description": description,
+            "options": options,
+            "data_fields": {f.id: f.value for f in data_fields},
+            "attachments": attachments,
+            "item": item,
+        })
+        return item
+
+    def get_item_priority_statuses(self, item_id, item_price):
+        return [
+            SimpleNamespace(id=plugin.STATUS_FREE_ID, price=0, name="Обычный", type=None),
+            SimpleNamespace(id="premium-1", price=25, name="Премиум", type="PREMIUM"),
+        ]
+
+    def publish_item(self, item_id, status_id, transaction_provider_id=None):
+        self.published.append((item_id, status_id))
+        return SimpleNamespace(id=item_id)
+
+    def increase_item_priority_status(self, item_id, status_id, **kwargs):
+        self.raised.append((item_id, status_id))
+        return SimpleNamespace(id=item_id)
+
+    def get_my_items(self, statuses=None, count=24, after_cursor=None):
+        items = [SimpleNamespace(id="item-1", name="Первый лот", price=100, status="APPROVED")]
+        return SimpleNamespace(items=items,
+                               page_info=SimpleNamespace(has_next_page=False, end_cursor=None))
+
+    def get_games(self, name=None, count=20):
+        return SimpleNamespace(games=[SimpleNamespace(id="g1", name="Steam", slug="steam")])
+
+    def get_game(self, id=None, slug=None):
+        return SimpleNamespace(id=id, name="Steam", categories=[
+            SimpleNamespace(id="1089", name="Аккаунты", slug="accounts")
+        ])
+
+
+class FakeCardinal:
+    def __init__(self):
+        self.account = FakeAccount()
+        self.telegram = None
+        self.MAIN_CFG = {"Playerok": {"restorePriorityMode": "free"}}
+
+    def get_balance(self):
+        return SimpleNamespace(available=1000)
+
+
+CHECKS: list[tuple[str, bool, str]] = []
+
+
+def check(name: str, condition: bool, details: str = "") -> None:
+    CHECKS.append((name, bool(condition), details))
+    print(("  [ OK ] " if condition else "  [FAIL] ") + name + (f" — {details}" if details and not condition else ""))
+
+
+def main() -> int:
+    temp_dir = tempfile.mkdtemp(prefix="pkll_test_")
+    plugin.SETTINGS_PATH = os.path.join(temp_dir, "settings.json")
+    plugin.STATE_PATH = os.path.join(temp_dir, "state.json")
+    plugin.COVERS_DIR = os.path.join(temp_dir, "covers")
+    plugin.CACHE_DIR = os.path.join(temp_dir, "cache")
+    plugin._FIELDS_CACHE.clear()
+    os.makedirs(plugin.COVERS_DIR, exist_ok=True)
+
+    # картинки-заглушки
+    for number in ("1", "2"):
+        with open(os.path.join(plugin.COVERS_DIR, number + ".png"), "wb") as f:
+            f.write(b"\x89PNG\r\n\x1a\n" + number.encode())
+
+    cardinal = FakeCardinal()
+    plugin.save_settings({"publish": True, "delay": 0.5})
+
+    print("1. Полный формат с шапкой, разные обложки и опции")
+    payload = {
+        "game_category_id": "1089",
+        "obtaining_type_id": "obt-1",
+        "publish": True,
+        "lots": [
+            {
+                "name": "Лот один",
+                "price": "100",
+                "description": "Описание 1",
+                "image": "1",
+                "options": {"Платформа": "PC"},
+                "data_fields": {"Логин": "user1", "Пароль": "pass1"},
+            },
+            {
+                "name": "Лот два",
+                "price": 150,
+                "description": "Описание 2",
+                "image": "2",
+                "options": {"platform": "PC"},
+                "data_fields": {"df-login": "user2", "Пароль": "pass2"},
+            },
+        ],
+    }
+    plan = plugin.build_plan(cardinal, payload)
+    check("нет ошибок", not plan["errors"], str(plan["errors"]))
+    check("оба лота собраны", len(plan["lots"]) == 2)
+    check("обложки найдены", all(lot["image"] for lot in plan["lots"]),
+          str([lot["image"] for lot in plan["lots"]]))
+    check("опция сопоставлена по названию",
+          plan["lots"][0]["options"] == {"platform": "PC"}, str(plan["lots"][0]["options"]))
+    check("поля данных сопоставлены по названию и по id",
+          plan["lots"][1]["data_fields"][0].id == "df-login"
+          and plan["lots"][1]["data_fields"][0].value == "user2")
+
+    print("2. Создание лотов и публикация")
+    for lot in plan["lots"]:
+        ok, message, item = plugin.create_one(cardinal, lot, plugin.load_settings())
+        check(f"лот «{lot['name']}» создан", ok, message)
+    check("в create_item передана обложка",
+          cardinal.account.created[0]["attachments"]
+          and cardinal.account.created[0]["attachments"][0].endswith("1.png"),
+          str(cardinal.account.created[0]["attachments"]))
+    check("лотов опубликовано: 2", len(cardinal.account.published) == 2,
+          str(cardinal.account.published))
+    check("публикация с бесплатным приоритетом",
+          all(status == plugin.STATUS_FREE_ID for _, status in cardinal.account.published))
+
+    print("3. Предупреждения: неизвестное поле, обязательное поле, нет обложки")
+    plan = plugin.build_plan(cardinal, {"game_category_id": "1089", "obtaining_type_id": "obt-1",
+                                        "lots": [{"name": "Лот", "price": 10,
+                                                  "data_fields": {"Что-то": "x"}}]})
+    warnings = " ".join(plan["warnings"])
+    check("неизвестное поле данных", "неизвестное поле данных" in warnings, warnings)
+    check("обязательное поле не заполнено", "обязательное поле" in warnings, warnings)
+    check("обложка не найдена", "обложка не указана" in warnings, warnings)
+    check("лот всё равно собран", len(plan["lots"]) == 1)
+
+    print("4. Ошибки валидации")
+    plan = plugin.build_plan(cardinal, {
+        "game_category_id": "1089", "obtaining_type_id": "obt-1",
+        "lots": [
+            {"name": "", "price": 10},
+            {"name": "Без цены"},
+            {"name": "Кривая цена", "price": "abc"},
+            {"name": "Ноль", "price": 0},
+            {"name": "Нет категории"},
+        ],
+    })
+    check("5 ошибок", len(plan["errors"]) == 5, str(plan["errors"]))
+    check("лотов не собрано", not plan["lots"])
+
+    print("5. Формат «массив лотов» с категорией в каждом лоте")
+    plan = plugin.build_plan(cardinal, [
+        {"name": "A", "price": 5, "game_category_id": "1089", "obtaining_type_id": "obt-1",
+         "data_fields": {"Логин": "u", "Пароль": "p"}},
+    ])
+    check("массив поддержан", len(plan["lots"]) == 1 and not plan["errors"], str(plan["errors"]))
+
+    print("6. Черновики без публикации")
+    plugin.save_settings({"publish": False})
+    cardinal.account.created.clear()
+    cardinal.account.published.clear()
+    plan = plugin.build_plan(cardinal, {"game_category_id": "1089", "obtaining_type_id": "obt-1",
+                                        "publish": False,
+                                        "lots": [{"name": "Черновик", "price": 7}]})
+    ok, message, _ = plugin.create_one(cardinal, plan["lots"][0], plugin.load_settings())
+    check("создан без публикации", ok and "черновиком" in message and not cardinal.account.published,
+          message)
+
+    print("7. Автоподнятие")
+    plugin.save_settings({"publish": True, "auto_raise": True, "raise_interval_minutes": 240})
+    state = plugin.load_state()
+    item = SimpleNamespace(id="item-1", name="Первый лот", price=100)
+    ok, message = plugin.raise_one(cardinal, item, plugin.load_settings())
+    check("raise_one сработал", ok, message)
+    check("поднятие бесплатным статусом",
+          cardinal.account.raised == [("item-1", plugin.STATUS_FREE_ID)],
+          str(cardinal.account.raised))
+    check("состояние сохраняется", isinstance(state.get("last_raise"), dict))
+
+    print("8. Премиум-поднятие: только по разрешению и в пределах лимита")
+    item = SimpleNamespace(id="item-1", name="Первый лот", price=100)
+    check("по умолчанию премиум запрещён",
+          plugin._pick_priority_status(cardinal, item, {"allow_premium": False})
+          == plugin.STATUS_FREE_ID)
+    check("премиум дороже лимита не берётся",
+          plugin._pick_priority_status(
+              cardinal, item, {"allow_premium": True, "premium_max_price": 10})
+          == plugin.STATUS_FREE_ID)
+    check("премиум в пределах лимита берётся",
+          plugin._pick_priority_status(
+              cardinal, item, {"allow_premium": True, "premium_max_price": 100}) == "premium-1")
+
+    cardinal.account.get_item_priority_statuses = lambda item_id, price: []
+    check("нет списка статусов — бесплатный",
+          plugin._pick_priority_status(cardinal, item, {"allow_premium": True}) == plugin.STATUS_FREE_ID)
+
+    print("9. Настройки: переключение автоподнятия и чтение из файла")
+    plugin.save_settings({"auto_raise": True, "raise_interval_minutes": 60})
+    loaded = plugin.load_settings()
+    check("настройки читаются", loaded["auto_raise"] is True and loaded["raise_interval_minutes"] == 60)
+    check("неизвестные ключи игнорируются",
+          "unknown" not in plugin.load_settings())
+
+    failed = [name for name, ok, _ in CHECKS if not ok]
+    print()
+    print("=" * 50)
+    if failed:
+        print(f"Провалено: {len(failed)} из {len(CHECKS)}")
+        for name in failed:
+            print("  -", name)
+        return 1
+    print(f"Все проверки пройдены: {len(CHECKS)}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
