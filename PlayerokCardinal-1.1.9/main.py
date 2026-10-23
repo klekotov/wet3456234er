@@ -1,30 +1,53 @@
-import time
-from pip._internal.cli.main import main
-
-# Устанавливаем зависимости перед импортом Utils.cardinal_tools
-while True:
-    try:
-        import lxml
-        break
-    except ModuleNotFoundError:
-        main(["install", "-U", "lxml>=5.2.2"])
-
-while True:
-    try:
-        import bcrypt
-        break
-    except ModuleNotFoundError:
-        main(["install", "-U", "bcrypt>=4.2.0"])
-
-while True:
-    try:
-        import psutil
-        break
-    except ModuleNotFoundError:
-        main(["install", "-U", "psutil>=5.9.4"])
-
 import sys
 import os
+import time
+
+# Устанавливаем базовые зависимости перед импортом Utils.cardinal_tools.
+# Одна попытка автозагрузки на пакет: если pip не смог (нет сети/прав/несовместимость),
+# печатаем инструкцию и выходим, а не крутим бесконечный цикл.
+_BOOTSTRAP_PACKAGES = (
+    ("lxml", "lxml>=5.2.2"),
+    ("bcrypt", "bcrypt>=4.2.0"),
+    ("psutil", "psutil>=5.9.4"),
+)
+
+
+def _bootstrap_pip() -> None:
+    try:
+        from pip._internal.cli.main import main as pip_main
+    except ModuleNotFoundError:
+        print(
+            "pip не найден в текущем Python. Установите зависимости вручную:\n"
+            f'  "{sys.executable}" -m pip install -U -r requirements.txt'
+        )
+        sys.exit(1)
+
+    for module_name, requirement in _BOOTSTRAP_PACKAGES:
+        try:
+            __import__(module_name)
+            continue
+        except ModuleNotFoundError:
+            pass
+
+        print(f"Устанавливаю {requirement}...")
+        try:
+            pip_main(["install", "-U", requirement])
+        except SystemExit:
+            pass
+        except Exception as ex:
+            print(f"  не удалось вызвать pip: {ex}")
+
+        try:
+            __import__(module_name)
+        except ModuleNotFoundError:
+            print()
+            print(f"  Не удалось установить {module_name}.")
+            print("  Установите зависимости тем же Python, которым запускается бот:")
+            print(f'    "{sys.executable}" -m pip install -U -r requirements.txt')
+            sys.exit(1)
+
+
+_bootstrap_pip()
 
 try:
     import Utils.cardinal_tools
@@ -45,6 +68,9 @@ except ModuleNotFoundError as ex:
     print()
     print("  Установите зависимости тем же Python, которым запускается бот:")
     print(f'    "{sys.executable}" -m pip install -U -r requirements.txt')
+    print()
+    print("  Рекомендуемый TLS-бэкенд (необязательно, но желательно):")
+    print(f'    "{sys.executable}" -m pip install -U -r requirements-tls.txt')
     print()
     print("  Диагностика окружения:")
     print(f'    "{sys.executable}" scripts/check_env.py')

@@ -385,6 +385,16 @@ if ! sudo -u "$username" "/home/$username/pyvenv/bin/pip" install -U -r "$poc_di
 fi
 ok "зависимости установлены"
 
+# curl-cffi (TLS-фингерпринт браузера) — необязателен: без него бот работает
+# на резервном бэкенде requests. Ошибка установки не прерывает установку.
+if [[ -f "$poc_dir/requirements-tls.txt" ]]; then
+  if sudo -u "$username" "/home/$username/pyvenv/bin/pip" install -U -r "$poc_dir/requirements-tls.txt" ; then
+    ok "TLS-бэкенд (curl-cffi) установлен"
+  else
+    echo -e "  ${YEL}!${R} curl-cffi установить не удалось — бот будет работать на резервном бэкенде requests"
+  fi
+fi
+
 # ── systemd + pocctl ────────────────────────────────────
 _clear
 print_banner

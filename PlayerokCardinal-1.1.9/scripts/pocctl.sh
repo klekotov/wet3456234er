@@ -103,7 +103,12 @@ cmd_update() {
     fi
     git config --global --add safe.directory "${POC_DIR}" 2>/dev/null || true
     sudo -u "${POC_USER}" git -C "${POC_DIR}" pull
-    sudo -u "${POC_USER}" "${POC_VENV}/bin/pip" install -r "${POC_DIR}/requirements.txt"
+    sudo -u "${POC_USER}" "${POC_VENV}/bin/pip" install -U -r "${POC_DIR}/requirements.txt"
+    if [[ -f "${POC_DIR}/requirements-tls.txt" ]]; then
+        if ! sudo -u "${POC_USER}" "${POC_VENV}/bin/pip" install -U -r "${POC_DIR}/requirements-tls.txt"; then
+            echo "Внимание: curl-cffi не установлен — бот будет работать на резервном бэкенде requests."
+        fi
+    fi
     systemctl daemon-reload
     systemctl restart "$(unit_name)"
     sleep 2

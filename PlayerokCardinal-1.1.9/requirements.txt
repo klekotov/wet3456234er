@@ -6,7 +6,6 @@ pytelegrambotapi==4.15.2
 pillow>=9.3.0
 lxml>=5.2.2
 bcrypt>=4.2.0
-curl-cffi>=0.13.0
 validators>=0.34.0
 colorlog>=6.9.0
 tqdm>=4.67.1

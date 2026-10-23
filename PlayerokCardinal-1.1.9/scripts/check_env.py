@@ -3,15 +3,13 @@
 Проверка окружения Playerok Cardinal.
 
 Скрипт проверяет, что запущен нужный интерпретатор, что установлены все
-зависимости из requirements.txt и что модули проекта импортируются.
+зависимости из requirements.txt (и, по возможности, дополнительный
+TLS-бэкенд из requirements-tls.txt) и что модули проекта импортируются.
 
 Запускать ТЕМ ЖЕ интерпретатором, которым запускается main.py
-(обычно это venv):
+(обычно это venv или python внутри контейнера):
 
     /home/<user>/pyvenv/bin/python scripts/check_env.py
-
-или, если venv активирован:
-
     python scripts/check_env.py
 """
 from __future__ import annotations
@@ -19,12 +17,13 @@ from __future__ import annotations
 import importlib
 import importlib.metadata as metadata
 import os
+import platform
 import sys
 import traceback
 
 MIN_PYTHON = (3, 10)
 
-# (имя пакета в pip, имя модуля для импорта)
+# (имя пакета в pip, имя модуля для импорта) — обязательные
 REQUIRED_PACKAGES: list[tuple[str, str]] = [
     ("psutil", "psutil"),
     ("beautifulsoup4", "bs4"),
@@ -34,16 +33,21 @@ REQUIRED_PACKAGES: list[tuple[str, str]] = [
     ("pillow", "PIL"),
     ("lxml", "lxml"),
     ("bcrypt", "bcrypt"),
-    ("curl-cffi", "curl_cffi"),
     ("validators", "validators"),
     ("colorlog", "colorlog"),
     ("tqdm", "tqdm"),
     ("websocket-client", "websocket"),
 ]
 
+# необязательные: без них бот работает на резервном бэкенде
+OPTIONAL_PACKAGES: list[tuple[str, str]] = [
+    ("curl-cffi", "curl_cffi"),
+]
+
 # модули самого проекта
 PROJECT_MODULES = [
     "PlayerokAPI",
+    "PlayerokAPI.http_client",
     "PlayerokAPI.account",
     "PlayerokAPI.types",
     "Utils.cardinal_tools",
@@ -59,8 +63,22 @@ def _fail(msg: str) -> None:
     print(f"  [FAIL] {msg}")
 
 
+def _warn(msg: str) -> None:
+    print(f"  [WARN] {msg}")
+
+
 def _skip(msg: str) -> None:
     print(f"  [ -- ] {msg}")
+
+
+def _libc_info() -> str:
+    if not sys.platform.startswith("linux"):
+        return "-"
+    try:
+        libc, version = platform.libc_ver()
+        return f"{libc or '?'} {version or '?'}"
+    except Exception:
+        return "?"
 
 
 def check_python() -> list[str]:
@@ -68,9 +86,17 @@ def check_python() -> list[str]:
     print("Интерпретатор")
     print(f"  executable: {sys.executable}")
     print(f"  version:    {sys.version.split()[0]}")
+    print(f"  platform:   {platform.platform()}")
+    print(f"  libc:       {_libc_info()}")
 
     in_venv = sys.prefix != getattr(sys, "base_prefix", sys.prefix)
     print(f"  venv:       {'да' if in_venv else 'нет (используется системный Python)'}")
+
+    try:
+        from pip import __version__ as pip_version
+        print(f"  pip:        {pip_version}")
+    except Exception:
+        print("  pip:        не установлен")
 
     if sys.version_info < MIN_PYTHON:
         _fail(f"нужен Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]}+")
@@ -79,7 +105,7 @@ def check_python() -> list[str]:
         _ok("версия Python подходит")
 
     if not in_venv:
-        _skip("рекомендуется запускать бота из venv (pyvenv)")
+        _skip("рекомендуется запускать бота из venv (pyvenv) или контейнера")
 
     return problems
 
@@ -101,6 +127,60 @@ def check_packages() -> list[str]:
         except Exception:
             version = "?"
         _ok(f"{pip_name} {version}")
+
+    print("\nДополнительно (requirements-tls.txt)")
+    for pip_name, import_name in OPTIONAL_PACKAGES:
+        try:
+            importlib.import_module(import_name)
+        except Exception as ex:
+            _warn(
+                f"{pip_name} — {type(ex).__name__}: {ex}\n"
+                f"         бот запустится на резервном бэкенде requests "
+                f"(без TLS-фингерпринта браузера)"
+            )
+            continue
+
+        try:
+            version = metadata.version(pip_name)
+        except Exception:
+            version = "?"
+        _ok(f"{pip_name} {version}")
+
+    return problems
+
+
+def check_backend() -> list[str]:
+    problems: list[str] = []
+    print("\nHTTP-бэкенд")
+
+    mode = os.getenv("POC_HTTP_BACKEND", "auto")
+    print(f"  POC_HTTP_BACKEND: {mode}")
+    if mode.strip().lower() not in ("auto", "curl_cffi", "requests", ""):
+        _warn("неизвестное значение, будет использовано auto")
+
+    project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if project_dir not in sys.path:
+        sys.path.insert(0, project_dir)
+
+    try:
+        from PlayerokAPI.http_client import create_session
+        from PlayerokAPI import http_client
+    except Exception as ex:
+        _fail(f"не удалось импортировать PlayerokAPI.http_client — {ex}")
+        return problems + ["http_client"]
+
+    try:
+        session, backend = create_session()
+        _ok(f"выбран бэкенд: {backend}")
+        close = getattr(session, "close", None)
+        if callable(close):
+            close()
+    except Exception as ex:
+        _fail(f"не удалось создать сессию — {type(ex).__name__}: {ex}")
+        problems.append("http-backend")
+
+    if http_client.get_backend_mode() == "curl_cffi" and backend != "curl_cffi":
+        problems.append("http-backend")
 
     return problems
 
@@ -146,6 +226,7 @@ def main() -> int:
     problems = []
     problems += check_python()
     problems += check_packages()
+    problems += check_backend()
     problems += check_project()
 
     print("\n" + "=" * 60)
@@ -162,6 +243,8 @@ def main() -> int:
     print(f'  "{sys.executable}" -m pip install -U pip')
     print(f'  "{sys.executable}" -m pip install -U -r requirements.txt')
     print("\nВажно: команда должна использовать ТОТ ЖЕ python, что и запуск main.py.")
+    print("Если pip падает при установке curl-cffi — это необязательный пакет:")
+    print("  бот запустится без него (резервный бэкенд requests).")
     return 1
 
 
