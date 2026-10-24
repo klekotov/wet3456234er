@@ -7,19 +7,31 @@
       "name": "Первый лот",
       "price": 100,
       "description": "Описание первого лота.",
-      "image": "1",
-      "options": {},
+      "images": [
+        "1",
+        "2"
+      ],
+      "options": {
+        "Страна": "russia",
+        "Игра": "blox-fruits"
+      },
       "data_fields": {
         "Логин": "user1",
         "Пароль": "pass1"
       }
     },
     {
-      "name": "Второй лот",
+      "name": "Второй лот (черновик)",
       "price": 150,
       "description": "Описание второго лота.",
-      "image": "2",
-      "options": {},
+      "images": [
+        "3"
+      ],
+      "publish": false,
+      "options": {
+        "Страна": "kazakhstan",
+        "Игра": "adopt-me"
+      },
       "data_fields": {
         "Логин": "user2",
         "Пароль": "pass2"
