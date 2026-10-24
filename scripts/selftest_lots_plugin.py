@@ -40,7 +40,24 @@ class FakeAccount:
         self.published: list[tuple[str, str]] = []
         self.raised: list[tuple[str, str]] = []
 
+    GAME_ID = "1ecc48ce-4f1a-6531-300d-9faaa8c3ab04"
+    CATEGORY_ID = "9d3f77b1-2c4e-4a55-8f60-11aa22bb33cc"
+
+    def get_game(self, id=None, slug=None):
+        if id == self.GAME_ID or slug == "roblox":
+            return SimpleNamespace(id=self.GAME_ID, name="Roblox", slug="roblox", categories=[
+                SimpleNamespace(id=self.CATEGORY_ID, name="Аккаунты", slug="accounts"),
+                SimpleNamespace(id="cat-robux", name="Валюта", slug="robux"),
+            ])
+        return None
+
     def get_game_category(self, id=None, game_id=None, slug=None):
+        if game_id == self.GAME_ID and slug == "accounts":
+            return SimpleNamespace(id=self.CATEGORY_ID, name="Аккаунты", slug="accounts")
+        if id == "9d3f77b1-2c4e-4a55-8f60-11aa22bb33cc":
+            return SimpleNamespace(id=self.CATEGORY_ID, name="Аккаунты", slug="accounts")
+        if id is not None and id.startswith("cat-"):
+            raise ValueError("категория не найдена")
         return SimpleNamespace(
             id=id,
             name="Тестовая категория",
@@ -107,10 +124,6 @@ class FakeAccount:
     def get_games(self, name=None, count=20):
         return SimpleNamespace(games=[SimpleNamespace(id="g1", name="Steam", slug="steam")])
 
-    def get_game(self, id=None, slug=None):
-        return SimpleNamespace(id=id, name="Steam", categories=[
-            SimpleNamespace(id="1089", name="Аккаунты", slug="accounts")
-        ])
 
 
 class FakeCardinal:
@@ -266,7 +279,65 @@ def main() -> int:
     check("нет списка статусов — бесплатный",
           plugin._pick_priority_status(cardinal, item, {"allow_premium": True}) == plugin.STATUS_FREE_ID)
 
-    print("9. Настройки: переключение автоподнятия и чтение из файла")
+    print("9. Поиск категории: UUID игры, UUID категории, название")
+    check("UUID распознаётся как ID", plugin._is_id("1ecc48ce-4f1a-6531-300d-9faaa8c3ab04"))
+    check("число распознаётся как ID", plugin._is_id("1089"))
+    check("slug — не ID", not plugin._is_id("accounts"))
+    check("пустая строка — не ID", not plugin._is_id(""))
+
+    found = plugin.resolve_query(cardinal.account, "1ecc48ce-4f1a-6531-300d-9faaa8c3ab04")
+    check("UUID игры → игра с категориями", found["kind"] == "game", found["kind"])
+    check("категории подтянулись", len(found.get("game").categories) == 2)
+
+    found = plugin.resolve_query(cardinal.account, "9d3f77b1-2c4e-4a55-8f60-11aa22bb33cc")
+    check("UUID категории → категория", found["kind"] == "category", found["kind"])
+
+    found = plugin.resolve_query(cardinal.account, "Roblox")
+    check("название → поиск", found["kind"] == "search", found["kind"])
+
+    found = plugin.resolve_query(cardinal.account, "cat-unknown")
+    check("неизвестный id → поиск, без падения", found["kind"] == "search", found["kind"])
+
+    print("10. Готовые команды в подсказках")
+    games_text = plugin.format_games([SimpleNamespace(
+        id="1ecc48ce-4f1a-6531-300d-9faaa8c3ab04", name="Roblox", slug="roblox")])
+    check("в списке игр есть команда /pk_cat с UUID",
+          "/pk_cat 1ecc48ce-4f1a-6531-300d-9faaa8c3ab04" in games_text, games_text)
+
+    cat_text = plugin.format_categories(
+        plugin.resolve_query(cardinal.account, "1ecc48ce-4f1a-6531-300d-9faaa8c3ab04")["game"])
+    check("в списке категорий есть /pk_template с ID категории",
+          "/pk_template 9d3f77b1-2c4e-4a55-8f60-11aa22bb33cc" in cat_text, cat_text)
+    check("подсказка про slug-путь",
+          "/pk_template 1ecc48ce-4f1a-6531-300d-9faaa8c3ab04 accounts" in cat_text, cat_text)
+
+    print("11. Аргументы /pk_template")
+    parsed = plugin.parse_template_args(
+        cardinal.account, ["9d3f77b1-2c4e-4a55-8f60-11aa22bb33cc"])
+    check("только ID категории", parsed == {"category_id": "9d3f77b1-2c4e-4a55-8f60-11aa22bb33cc",
+                                            "obtaining_type_id": "", "error": ""}, str(parsed))
+
+    parsed = plugin.parse_template_args(
+        cardinal.account, ["1ecc48ce-4f1a-6531-300d-9faaa8c3ab04", "accounts"])
+    check("игра + slug → ID категории",
+          parsed["category_id"] == "9d3f77b1-2c4e-4a55-8f60-11aa22bb33cc" and not parsed["error"],
+          str(parsed))
+
+    parsed = plugin.parse_template_args(
+        cardinal.account, ["1ecc48ce-4f1a-6531-300d-9faaa8c3ab04", "no-such"])
+    check("несуществующий slug → понятная ошибка",
+          bool(parsed["error"]) and not parsed["category_id"], str(parsed))
+
+    parsed = plugin.parse_template_args(cardinal.account, ["accounts"])
+    check("slug вместо ID → ошибка", bool(parsed["error"]), str(parsed))
+
+    parsed = plugin.parse_template_args(
+        cardinal.account, ["9d3f77b1-2c4e-4a55-8f60-11aa22bb33cc",
+                           "1efbe5bc-99a7-68e5-4534-85dad913b981"])
+    check("категория + способ получения",
+          parsed["obtaining_type_id"] == "1efbe5bc-99a7-68e5-4534-85dad913b981", str(parsed))
+
+    print("12. Настройки: переключение автоподнятия и чтение из файла")
     plugin.save_settings({"auto_raise": True, "raise_interval_minutes": 60})
     loaded = plugin.load_settings()
     check("настройки читаются", loaded["auto_raise"] is True and loaded["raise_interval_minutes"] == 60)

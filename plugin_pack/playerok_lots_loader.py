@@ -55,7 +55,7 @@ if TYPE_CHECKING:
     from cardinal import Cardinal
 
 NAME = "Playerok Lots Loader"
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 DESCRIPTION = "Загрузка лотов Playerok из JSON, свои обложки и автоподнятие."
 CREDITS = "@you"
 UUID = "b3f0c1d2-71a4-4c58-9a61-2e0f7d4b8c15"
@@ -168,6 +168,134 @@ def _e(text: Any) -> str:
 def _short(text: Any, limit: int = 60) -> str:
     value = str(text or "").replace("\n", " ").strip()
     return value if len(value) <= limit else value[: limit - 1] + "…"
+
+
+UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+
+
+def _is_id(value: Any) -> bool:
+    """
+    Похоже ли значение на ID Playerok.
+
+    ID игр, категорий и способов получения — это UUID
+    (``1ecc48ce-4f1a-6531-300d-9faaa8c3ab04``), поэтому проверять ``isdigit()``
+    нельзя: UUID всегда принимался за название игры.
+    """
+    text = str(value or "").strip()
+    return bool(text) and (text.isdigit() or bool(UUID_RE.match(text)))
+
+
+def resolve_query(account, query: str) -> dict:
+    """
+    Понимает, что ввёл пользователь: игру, категорию или поисковый запрос.
+
+    :return: ``{"kind": "game", "game": …}``, ``{"kind": "category", "category": …}``
+             или ``{"kind": "search"}``.
+    """
+    query = str(query or "").strip()
+    if not _is_id(query):
+        return {"kind": "search"}
+
+    try:
+        game = account.get_game(id=query)
+    except Exception as ex:
+        logger.debug("get_game(%s): %s", query, ex)
+        game = None
+
+    if game is not None and (getattr(game, "categories", None) or []):
+        return {"kind": "game", "game": game}
+
+    try:
+        category = account.get_game_category(id=query)
+    except Exception as ex:
+        logger.debug("get_game_category(%s): %s", query, ex)
+        category = None
+
+    if category is not None and getattr(category, "id", None):
+        return {"kind": "category", "category": category}
+
+    return {"kind": "search"}
+
+
+def format_games(games: list) -> str:
+    """Список найденных игр с готовыми командами."""
+    lines = [f"Найдено игр: <b>{len(games)}</b>"]
+    for game in games:
+        lines.append(
+            f"• <b>{_e(getattr(game, 'name', ''))}</b> "
+            f"(<i>{_e(getattr(game, 'slug', ''))}</i>)\n"
+            f"  <code>/pk_cat {_e(getattr(game, 'id', ''))}</code>"
+        )
+    lines.append("\nНажмите на команду под игрой — бот покажет её категории.")
+    return "\n".join(lines)
+
+
+def format_categories(game) -> str:
+    """Список категорий игры с готовыми командами для шаблона."""
+    categories = getattr(game, "categories", None) or []
+    game_id = str(getattr(game, "id", "") or "")
+    lines = [f"<b>{_e(getattr(game, 'name', ''))}</b> — категории ({len(categories)}):"]
+    for category in categories:
+        lines.append(
+            f"• <b>{_e(getattr(category, 'name', ''))}</b> "
+            f"(<i>{_e(getattr(category, 'slug', ''))}</i>)\n"
+            f"  <code>/pk_template {_e(getattr(category, 'id', ''))}</code>"
+        )
+
+    slugs = [str(getattr(category, "slug", "") or "") for category in categories]
+    example = "accounts" if "accounts" in slugs else (slugs[0] if slugs else "accounts")
+    lines.append(
+        "\nБез ID категории можно так: "
+        f"<code>/pk_template {_e(game_id)} {_e(example)}</code>"
+    )
+    return "\n".join(lines)
+
+
+def parse_template_args(account, args: list[str]) -> dict:
+    """
+    Разбирает аргументы ``/pk_template``.
+
+    Поддерживаются три формы:
+
+    * ``<id категории>`` — шаблон, способы получения предложит бот;
+    * ``<id категории> <id способа получения>``;
+    * ``<id игры> <slug категории>`` — например ``… accounts``.
+
+    :return: ``{"category_id": str, "obtaining_type_id": str, "error": str}``.
+    """
+    result = {"category_id": "", "obtaining_type_id": "", "error": ""}
+    args = [str(arg).strip() for arg in (args or []) if str(arg).strip()]
+    if not args:
+        result["error"] = "нужен ID категории или ID игры и slug категории"
+        return result
+
+    first = args[0]
+    second = args[1] if len(args) > 1 else ""
+
+    if second and not _is_id(second):
+        # /pk_template <id игры> <slug категории>
+        if not _is_id(first):
+            result["error"] = "ID игры должен быть UUID"
+            return result
+        try:
+            category = account.get_game_category(game_id=first, slug=second)
+        except Exception as ex:
+            result["error"] = f"категория «{second}» у игры {first} не найдена ({ex})"
+            return result
+        category_id = str(getattr(category, "id", "") or "")
+        if not category_id:
+            result["error"] = "не удалось определить ID категории"
+            return result
+        result["category_id"] = category_id
+        return result
+
+    if not _is_id(first):
+        result["error"] = "ID категории должен быть UUID, например 1ecc48ce-4f1a-…"
+        return result
+
+    result["category_id"] = first
+    result["obtaining_type_id"] = second
+    return result
 
 
 # ── обложки ──────────────────────────────────────────────────
@@ -642,16 +770,15 @@ def _menu_kb() -> K:
 def _help_text() -> str:
     return (
         "<b>Playerok Lots Loader</b>\n\n"
-        "Команды:\n"
-        "• /pk_upload — загрузить лоты из JSON-файла\n"
-        "• /pk_template — получить шаблон JSON под категорию\n"
-        "• /pk_cat — найти игру и её категории\n"
-        "• /pk_cover — загрузить обложку для лота\n"
-        "• /pk_raise — автоподнятие лотов вкл/выкл\n"
-        "• /pk_raise_now — поднять все лоты сейчас\n\n"
+        "Как начать:\n"
+        "1. <code>/pk_cat Roblox</code> — найти игру\n"
+        "2. <code>/pk_cat ID_игры</code> — её категории (например, «Аккаунты»)\n"
+        "3. <code>/pk_template ID_категории</code> — шаблон JSON\n"
+        "4. <code>/pk_cover 1</code> — обложка, <code>/pk_upload</code> — загрузка\n\n"
+        "Остальные команды: /pk_raise — автоподнятие, /pk_raise_now — поднять сейчас.\n\n"
         "Формат файла:\n"
         "<pre>{\n"
-        "  \"game_category_id\": \"1089\",\n"
+        "  \"game_category_id\": \"1ecc48ce-4f1a-…\",\n"
         "  \"obtaining_type_id\": \"…\",\n"
         "  \"publish\": true,\n"
         "  \"lots\": [\n"
@@ -905,14 +1032,22 @@ def init_commands(cardinal: "Cardinal"):
         if not parts:
             bot.send_message(
                 message.chat.id,
-                "Использование:\n"
-                "• <code>/pk_template ID_категории</code> — шаблон сразу\n"
-                "• <code>/pk_cat Название игры</code> — найти категории\n\n"
-                "ID категории виден в ссылке: playerok.com/<i>игра</i>/<b>категория</b>.",
+                "Как получить шаблон:\n"
+                "1. <code>/pk_cat Roblox</code> — найти игру\n"
+                "2. <code>/pk_cat ID_игры</code> — её категории\n"
+                "3. <code>/pk_template ID_категории</code> — шаблон\n\n"
+                "Короткий путь, без ID категории:\n"
+                "<code>/pk_template ID_игры accounts</code>\n"
+                "<i>accounts</i> — slug категории из списка <code>/pk_cat</code>.",
             )
             return
 
-        category_id = parts[0]
+        parsed = parse_template_args(cardinal.account, parts)
+        if parsed["error"]:
+            bot.send_message(message.chat.id, f"❌ {_e(parsed['error'])}")
+            return
+
+        category_id = parsed["category_id"]
         try:
             types = cardinal.account.get_game_category_obtaining_types(category_id)
             obtaining_types = getattr(types, "obtaining_types", None) or []
@@ -920,8 +1055,8 @@ def init_commands(cardinal: "Cardinal"):
             bot.send_message(message.chat.id, f"❌ Категория не найдена: {_e(ex)}")
             return
 
-        if len(parts) >= 2:
-            send_template(message.chat.id, category_id, parts[1])
+        if parsed["obtaining_type_id"]:
+            send_template(message.chat.id, category_id, parsed["obtaining_type_id"])
             return
 
         if not obtaining_types:
@@ -948,43 +1083,40 @@ def init_commands(cardinal: "Cardinal"):
             bot.send_message(
                 message.chat.id,
                 "Использование:\n"
-                "• <code>/pk_cat Steam</code> — найти игры\n"
-                "• <code>/pk_cat 123456</code> — категории игры по её ID",
+                "• <code>/pk_cat Roblox</code> — найти игру по названию\n"
+                "• <code>/pk_cat ID_игры</code> — категории игры (ID вида "
+                "<code>1ecc48ce-4f1a-…</code>)\n"
+                "• <code>/pk_cat ID_категории</code> — подскажет шаблон для неё",
             )
             return
 
         try:
-            if query.isdigit():
-                game = cardinal.account.get_game(id=query)
-                categories = getattr(game, "categories", None) or []
-                if not categories:
-                    bot.send_message(message.chat.id, "❌ У игры нет категорий.")
-                    return
-                lines = [f"<b>{_e(getattr(game, 'name', query))}</b> — категории:"]
-                for cat in categories:
-                    lines.append(
-                        f"• <code>{_e(getattr(cat, 'id', ''))}</code> — "
-                        f"{_e(getattr(cat, 'name', ''))} "
-                        f"(<i>{_e(getattr(cat, 'slug', ''))}</i>)"
-                    )
-                lines.append("\nДальше: <code>/pk_template ID_категории</code>")
-                bot.send_message(message.chat.id, "\n".join(lines))
+            found = resolve_query(cardinal.account, query)
+
+            if found["kind"] == "game":
+                bot.send_message(message.chat.id, format_categories(found["game"]))
+                return
+
+            if found["kind"] == "category":
+                category = found["category"]
+                bot.send_message(
+                    message.chat.id,
+                    f"Это категория <b>{_e(getattr(category, 'name', ''))}</b> "
+                    f"(<i>{_e(getattr(category, 'slug', ''))}</i>).\n"
+                    f"Шаблон: <code>/pk_template {_e(query)}</code>",
+                )
                 return
 
             games = cardinal.account.get_games(name=query, count=20)
             game_items = getattr(games, "games", None) or []
             if not game_items:
-                bot.send_message(message.chat.id, "❌ Ничего не найдено.")
-                return
-            lines = [f"Найдено игр: <b>{len(game_items)}</b>"]
-            for game in game_items:
-                lines.append(
-                    f"• <code>{_e(getattr(game, 'id', ''))}</code> — "
-                    f"{_e(getattr(game, 'name', ''))} "
-                    f"(<i>{_e(getattr(game, 'slug', ''))}</i>)"
+                bot.send_message(
+                    message.chat.id,
+                    "❌ Ничего не найдено. Попробуйте другое название игры "
+                    "(например, «Roblox», «Steam»).",
                 )
-            lines.append("\nДальше: <code>/pk_cat ID_игры</code>")
-            bot.send_message(message.chat.id, "\n".join(lines))
+                return
+            bot.send_message(message.chat.id, format_games(game_items))
         except Exception as ex:
             logger.debug("TRACEBACK", exc_info=True)
             bot.send_message(message.chat.id, f"❌ Ошибка: {_e(ex)}")

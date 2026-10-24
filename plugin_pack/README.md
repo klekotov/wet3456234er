@@ -20,8 +20,11 @@
 | Команда | Что делает |
 | --- | --- |
 | `/pk_lots` | справка и меню |
-| `/pk_cat Steam` | найти игру (по названию) или её категории (по ID) |
+| `/pk_cat Roblox` | найти игру по названию |
+| `/pk_cat <id игры>` | показать категории игры и готовые команды |
+| `/pk_cat <id категории>` | подсказать шаблон для этой категории |
 | `/pk_template <id категории>` | получить готовый JSON-шаблон с полями и опциями |
+| `/pk_template <id игры> <slug>` | то же без ID категории, например `… accounts` |
 | `/pk_upload` | отправить JSON — бот покажет предпросмотр и попросит подтверждение |
 | `/pk_cover 1` | загрузить обложку №1 (сохраняется в `storage/products/covers/1.png`) |
 | `/pk_raise` | включить/выключить автоподнятие |
@@ -29,7 +32,22 @@
 
 Формат JSON: см. `playerok_lots_example.json` и вывод `/pk_template`.
 
-Настройки: `storage/plugins/playerok_lots_loader_settings.json`
+### Как найти ID категории
+
+ID в Playerok — это UUID (`1ecc48ce-4f1a-6531-300d-9faaa8c3ab04`), а не число.
+
+1. `/pk_cat Roblox` — поиск игры по названию, под каждой игрой будет готовая команда;
+2. `/pk_cat <id игры>` — список категорий, под каждой — готовая команда `/pk_template <id>`;
+3. `/pk_template <id категории>` — шаблон. Категория «Аккаунты» — это и есть нужный ID.
+
+Без ID категории: `/pk_template <id игры> accounts` — плагин сам найдёт категорию по slug.
+
+Ещё вариант — свои уже выставленные лоты: `storage/cache/listed_lots.json`, поля
+`category_id`, `category_slug`, `category_name`.
+
+### Настройки
+
+Файл: `storage/plugins/playerok_lots_loader_settings.json`
 
 | Ключ | По умолчанию | Значение |
 | --- | --- | --- |
