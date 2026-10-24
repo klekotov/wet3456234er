@@ -17,13 +17,13 @@ Playerok Lots Loader — загрузка лотов Playerok из JSON.
   "game_category_id": "1089",
   "obtaining_type_id": "…",
   "publish": true,
-  "image": "storage/products/covers/1.png",   // общая обложка (необязательно)
+  "images": ["storage/products/covers/1.png"],  // общая обложка (необязательно)
   "lots": [
     {
       "name": "Название лота",
       "price": 100,
       "description": "Описание",
-      "image": "2",                            // своя обложка: номер, имя файла или путь
+      "images": ["2", "3"],                   // свои обложки: номера, имена файлов или пути (до 10)
       "options": {"Платформа": "PC"},
       "data_fields": {"Логин": "user1", "Пароль": "pass1"}
     }
@@ -55,7 +55,7 @@ if TYPE_CHECKING:
     from cardinal import Cardinal
 
 NAME = "Playerok Lots Loader"
-VERSION = "1.0.1"
+VERSION = "1.1.0"
 DESCRIPTION = "Загрузка лотов Playerok из JSON, свои обложки и автоподнятие."
 CREDITS = "@you"
 UUID = "b3f0c1d2-71a4-4c58-9a61-2e0f7d4b8c15"
@@ -71,6 +71,9 @@ COVERS_DIR = "storage/products/covers"
 CACHE_DIR = "storage/cache"
 
 IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".gif")
+
+#: Playerok принимает не больше 10 файлов-обложек на один лот.
+MAX_IMAGES = 10
 
 #: ID бесплатного статуса приоритета (тот же, что использует авто-восстановление).
 STATUS_FREE_ID = "1efbe5bc-99a7-68e5-4534-85dad913b981"
@@ -328,6 +331,46 @@ def resolve_image(value: Any, default: str | None = None) -> str | None:
     return None
 
 
+def resolve_images(value: Any, default: Any = None) -> tuple[list[str], list[str]]:
+    """
+    Находит файлы-обложки лота.
+
+    Принимает строку, число или список: ``"1"``, ``1``, ``["1", "2"]``,
+    ``["acc1.jpg", "covers/acc2.png"]``. Максимум — :data:`MAX_IMAGES` штук
+    (ограничение Playerok).
+
+    :return: (пути к найденным файлам, предупреждения).
+    """
+    warnings: list[str] = []
+    if value in (None, "", [], {}):
+        value = default
+    if value in (None, "", [], {}):
+        return [], warnings
+
+    raw_items = value if isinstance(value, (list, tuple)) else [value]
+    paths: list[str] = []
+
+    for item in raw_items:
+        if item in (None, ""):
+            continue
+        path = resolve_image(item)
+        if not path:
+            warnings.append(f"обложка «{item}» не найдена")
+            continue
+        if path in paths:
+            continue
+        paths.append(path)
+
+    if len(paths) > MAX_IMAGES:
+        warnings.append(
+            f"обложек {len(paths)}, Playerok принимает не больше {MAX_IMAGES} — "
+            f"лишние пропущены"
+        )
+        paths = paths[:MAX_IMAGES]
+
+    return paths, warnings
+
+
 def _ext_from_name(name: str | None) -> str:
     if name:
         ext = os.path.splitext(name)[1].lower()
@@ -421,8 +464,56 @@ def _match_data_fields(available: list, mapping: Any) -> tuple[list, list[str]]:
     return result, warnings
 
 
+def build_option_schema(category) -> dict:
+    """
+    Раскладывает опции категории по группам.
+
+    В Playerok одна группа (например, «Страна») — это одно поле запроса
+    (``field``) и много допустимых значений (``value`` у каждой опции).
+
+    :return: ``{ключ группы: {"label": str, "field": str, "options": [...]}}``.
+    """
+    schema: dict[str, dict] = {}
+    for option in getattr(category, "options", None) or []:
+        field = str(getattr(option, "field", "") or "")
+        group = str(getattr(option, "group", "") or "") or str(getattr(option, "label", "") or "")
+        key = _normalize(group) or _normalize(field)
+        if not key:
+            continue
+        entry = schema.setdefault(
+            key,
+            {"label": group or field, "field": field, "options": []},
+        )
+        if not entry["field"] and field:
+            entry["field"] = field
+        entry["options"].append(option)
+    return schema
+
+
+def _option_values(entry: dict) -> dict:
+    """Допустимые значения группы: ``{нормализованное значение: каноническое}``."""
+    values: dict[str, str] = {}
+    for option in entry["options"]:
+        value = getattr(option, "value", None)
+        if value in (None, ""):
+            continue
+        values.setdefault(_normalize(value), str(value))
+        label = getattr(option, "label", None)
+        if label:
+            values.setdefault(_normalize(label), str(value))
+    return values
+
+
 def _match_options(category, mapping: Any) -> tuple[dict, list[str]]:
-    """Сопоставляет опции (атрибуты) из JSON с опциями категории."""
+    """
+    Сопоставляет ``options`` из JSON с опциями категории и проверяет значения.
+
+    Ключом можно писать название опции («Россия»), группу («Страна») или
+    ``field`` («country»); значение — каноническое значение из шаблона
+    («russia») или название («Россия»).
+
+    :return: ({field: value}, предупреждения).
+    """
     warnings: list[str] = []
     if not mapping:
         return {}, warnings
@@ -430,21 +521,121 @@ def _match_options(category, mapping: Any) -> tuple[dict, list[str]]:
         warnings.append("options должен быть объектом вида {\"Название\": \"значение\"}")
         return {}, warnings
 
-    by_key: dict[str, Any] = {}
-    for option in getattr(category, "options", None) or []:
-        for key in (getattr(option, "field", None), getattr(option, "label", None),
-                    getattr(option, "group", None)):
-            if key:
-                by_key.setdefault(_normalize(key), option)
-
+    schema = build_option_schema(category)
     result: dict[str, str] = {}
+    used_groups: dict[str, str] = {}
+
     for key, value in mapping.items():
-        option = by_key.get(_normalize(key))
-        if option is None:
+        norm_key = _normalize(key)
+        text_value = "" if value is None else str(value)
+
+        # 1) ключ — название опции («Россия»)
+        matched = None
+        group_key = ""
+        for gkey, entry in schema.items():
+            for option in entry["options"]:
+                if _normalize(getattr(option, "label", "")) == norm_key:
+                    matched = entry
+                    group_key = gkey
+                    break
+            if matched:
+                break
+
+        # 2) ключ — группа («Страна») или field («country»)
+        if matched is None:
+            for gkey, entry in schema.items():
+                if norm_key in (gkey, _normalize(entry["field"])):
+                    matched = entry
+                    group_key = gkey
+                    break
+
+        if matched is None:
             warnings.append(f"неизвестная опция «{key}»")
             continue
-        result[str(getattr(option, "field", key))] = "" if value is None else str(value)
+
+        field = matched["field"] or str(key)
+        allowed = _option_values(matched)
+        switch_only = len({_normalize(getattr(o, "value", "")) for o in matched["options"]}) <= 1
+
+        if switch_only:
+            # группа-переключатель: «Почта» = true / false
+            canonical = str(getattr(matched["options"][0], "value", "") or "true")
+            if text_value.strip().lower() in ("", "true", "1", "on", "да", "yes"):
+                result[field] = canonical
+            elif text_value.strip().lower() in ("false", "0", "off", "нет", "no"):
+                warnings.append(f"опция «{key}» выключена — уберите её из options")
+            else:
+                warnings.append(f"для «{key}» ожидается true/false, получено «{text_value}»")
+            continue
+
+        if not text_value.strip():
+            warnings.append(f"пустое значение для опции «{key}»")
+            continue
+
+        canonical = allowed.get(_normalize(text_value))
+        if canonical is None:
+            sample = ", ".join(sorted(set(allowed.values()))[:6])
+            warnings.append(
+                f"недопустимое значение «{text_value}» для «{matched['label']}» "
+                f"(например: {sample}{'…' if len(allowed) > 6 else ''})"
+            )
+            continue
+
+        if group_key in used_groups and used_groups[group_key] != canonical:
+            warnings.append(
+                f"для «{matched['label']}» выбрано несколько значений — "
+                f"будет использовано «{canonical}»"
+            )
+        used_groups[group_key] = canonical
+        result[field] = canonical
+
     return result, warnings
+
+
+def example_options(category) -> dict:
+    """По одному значению на группу — основа для шаблона."""
+    example: dict[str, str] = {}
+    for entry in build_option_schema(category).values():
+        options = entry["options"]
+        if not options:
+            continue
+        option = options[0]
+        label = str(getattr(option, "label", "") or entry["label"])
+        value = getattr(option, "value", None)
+        if value in (None, ""):
+            continue
+        example[label] = str(value)
+    return example
+
+
+def format_option_schema(category, limit: int = 12) -> str:
+    """Человекочитаемый список групп и допустимых значений."""
+    schema = build_option_schema(category)
+    if not schema:
+        return "У этой категории нет характеристик (options)."
+
+    lines = [f"Характеристики категории «{_e(getattr(category, 'name', ''))}»:"]
+    for entry in schema.values():
+        field = entry["field"]
+        options = entry["options"]
+        values = []
+        for option in options:
+            label = str(getattr(option, "label", "") or "")
+            value = str(getattr(option, "value", "") or "")
+            values.append(f"<code>{_e(value)}</code>" + (f" ({_e(label)})" if label and _normalize(label) != _normalize(value) else ""))
+        shown = values[:limit]
+        more = f" … и ещё {len(values) - limit}" if len(values) > limit else ""
+        lines.append(
+            f"\n<b>{_e(entry['label'])}</b> — поле <code>{_e(field)}</code>"
+            f"{' (переключатель)' if len(set(values)) <= 1 else ''}\n  "
+            + ", ".join(shown) + more
+        )
+    lines.append(
+        "\nВ JSON пишите по одному значению на группу, например:\n"
+        "<code>\"options\": {\"" + _e(next(iter(schema.values()))["label"]) + "\": \""
+        + _e(str(getattr(next(iter(schema.values()))["options"][0], "value", ""))) + "\"}</code>"
+    )
+    return "\n".join(lines)
 
 
 # ── сборка и проверка плана ──────────────────────────────────
@@ -470,7 +661,12 @@ def build_plan(cardinal: "Cardinal", payload: Any) -> dict:
 
     header_cat = str(header.get("game_category_id") or "").strip()
     header_obt = str(header.get("obtaining_type_id") or "").strip()
-    header_image = header.get("image") or header.get("default_image") or settings.get("default_image")
+    header_images = (
+        header.get("images")
+        or header.get("image")
+        or header.get("default_images")
+        or settings.get("default_image")
+    )
     publish = bool(header.get("publish", settings.get("publish", True)))
 
     account = cardinal.account
@@ -531,11 +727,15 @@ def build_plan(cardinal: "Cardinal", payload: Any) -> dict:
         )
         warnings.extend(f"лот {index}: {w}" for w in field_warnings)
 
-        image_value = raw.get("image") or raw.get("cover") or header_image
-        image_path = resolve_image(image_value)
-        if image_value and not image_path:
-            warnings.append(f"лот {index}: обложка «{image_value}» не найдена — лот будет без неё")
-        elif not image_value:
+        images_value = (
+            raw.get("images") or raw.get("image") or raw.get("covers") or raw.get("cover")
+        )
+        if images_value in (None, "", [], {}):
+            images_value = header_images
+
+        images, image_warnings = resolve_images(images_value)
+        warnings.extend(f"лот {index}: {w}" for w in image_warnings)
+        if not images_value:
             warnings.append(f"лот {index}: обложка не указана — лот будет без неё")
 
         lots.append({
@@ -547,7 +747,8 @@ def build_plan(cardinal: "Cardinal", payload: Any) -> dict:
             "obtaining_type_id": obt_id,
             "options": options,
             "data_fields": data_fields,
-            "image": image_path,
+            "images": images,
+            "publish": bool(raw.get("publish", publish)),
         })
 
     return {"lots": lots, "errors": errors, "warnings": warnings, "publish": publish}
@@ -601,7 +802,9 @@ def publish_item(cardinal: "Cardinal", item, settings: dict) -> tuple[bool, str]
 
 def create_one(cardinal: "Cardinal", lot: dict, settings: dict) -> tuple[bool, str, Any]:
     """Создаёт (и при необходимости публикует) один лот."""
-    attachments = [lot["image"]] if lot.get("image") else []
+    attachments = list(lot.get("images") or [])
+    if len(attachments) > MAX_IMAGES:
+        attachments = attachments[:MAX_IMAGES]
     try:
         item = cardinal.account.create_item(
             game_category_id=lot["game_category_id"],
@@ -616,7 +819,10 @@ def create_one(cardinal: "Cardinal", lot: dict, settings: dict) -> tuple[bool, s
     except Exception as ex:
         return False, f"ошибка создания: {ex}", None
 
-    if not settings.get("publish", True):
+    publish = lot.get("publish")
+    if publish is None:
+        publish = settings.get("publish", True)
+    if not publish:
         return True, "создан черновиком", item
 
     ok, message = publish_item(cardinal, item, settings)
@@ -758,6 +964,14 @@ def _start_raise_thread(cardinal: "Cardinal") -> None:
 
 
 # ── тексты и клавиатуры ──────────────────────────────────────
+def _send_long(bot, chat_id: int, text: str, chunk: int = 3500) -> None:
+    """Отправляет длинный текст частями (лимит Telegram — 4096 символов)."""
+    text = text or ""
+    while text:
+        part, text = text[:chunk], text[chunk:]
+        bot.send_message(chat_id, part, disable_web_page_preview=True)
+
+
 def _menu_kb() -> K:
     keyboard = K()
     keyboard.add(B("📥 Загрузить JSON", callback_data=CB + "upload"))
@@ -773,9 +987,11 @@ def _help_text() -> str:
         "Как начать:\n"
         "1. <code>/pk_cat Roblox</code> — найти игру\n"
         "2. <code>/pk_cat ID_игры</code> — её категории (например, «Аккаунты»)\n"
-        "3. <code>/pk_template ID_категории</code> — шаблон JSON\n"
-        "4. <code>/pk_cover 1</code> — обложка, <code>/pk_upload</code> — загрузка\n\n"
-        "Остальные команды: /pk_raise — автоподнятие, /pk_raise_now — поднять сейчас.\n\n"
+        "3. <code>/pk_template ID_категории</code> — шаблон JSON и список значений\n"
+        "4. <code>/pk_cover 1</code> — обложка (до 10: <code>/pk_cover 1 2 3</code>), "
+        "<code>/pk_upload</code> — загрузка\n\n"
+        "Ещё: /pk_options — характеристики категории, /pk_raise — автоподнятие, "
+        "/pk_raise_now — поднять сейчас.\n\n"
         "Формат файла:\n"
         "<pre>{\n"
         "  \"game_category_id\": \"1ecc48ce-4f1a-…\",\n"
@@ -786,14 +1002,15 @@ def _help_text() -> str:
         "      \"name\": \"Название\",\n"
         "      \"price\": 100,\n"
         "      \"description\": \"Описание\",\n"
-        "      \"image\": \"1\",\n"
+        "      \"images\": [\"1\", \"2\"],\n"
         "      \"options\": {\"Платформа\": \"PC\"},\n"
         "      \"data_fields\": {\"Логин\": \"user\", \"Пароль\": \"pass\"}\n"
         "    }\n"
         "  ]\n"
         "}</pre>\n"
-        "В одном файле может быть сколько угодно лотов, у каждого — своя обложка "
-        f"(<code>{COVERS_DIR}</code> или путь к файлу)."
+        "В одном файле может быть сколько угодно лотов, у каждого — свои обложки "
+        f"(до {MAX_IMAGES} штук, файлы в <code>{COVERS_DIR}</code> или пути к ним).\n"
+        "<code>\"publish\": false</code> — оставить черновиком."
     )
 
 
@@ -894,13 +1111,26 @@ def init_commands(cardinal: "Cardinal"):
         token = uuid.uuid4().hex[:10]
         PENDING[message.chat.id] = {"token": token, "plan": plan}
 
-        lines = [f"Проверено: <b>{len(plan['lots'])}</b> лот(-ов)."]
-        preview = plan["lots"][:5]
+        lots = plan["lots"]
+        drafts = sum(1 for lot in lots if not lot.get("publish", True))
+        lines = [f"Проверено: <b>{len(lots)}</b> лот(-ов)."]
+        if drafts:
+            lines.append(f"📝 Черновиками (без публикации): {drafts}")
+        preview = lots[:5]
         for lot in preview:
-            cover = "🖼" if lot.get("image") else "▫️"
-            lines.append(f"{cover} {_e(_short(lot['name'], 45))} — {lot['price']} ₽")
-        if len(plan["lots"]) > len(preview):
-            lines.append(f"… и ещё {len(plan['lots']) - len(preview)}")
+            images = lot.get("images") or []
+            if not images:
+                cover = "▫️ без обложки"
+            elif len(images) == 1:
+                cover = "🖼 1 обложка"
+            else:
+                cover = f"🖼 {len(images)} обложки"
+            state = "" if lot.get("publish", True) else " · черновик"
+            lines.append(
+                f"{cover} · {_e(_short(lot['name'], 40))} — {lot['price']} ₽{state}"
+            )
+        if len(lots) > len(preview):
+            lines.append(f"… и ещё {len(lots) - len(preview)}")
 
         if plan["warnings"]:
             lines.append("\n⚠️ Предупреждения:")
@@ -988,11 +1218,9 @@ def init_commands(cardinal: "Cardinal"):
 
         from PlayerokAPI.enums import GameCategoryDataFieldTypes
 
-        options = {}
-        for option in getattr(category, "options", None) or []:
-            key = getattr(option, "label", None) or getattr(option, "field", None)
-            if key:
-                options[key] = getattr(option, "value", "") or ""
+        # по одному значению на группу: «Страна» → «Россия», «Игра» → одна игра.
+        # Полный список допустимых значений уходит отдельным сообщением.
+        options = example_options(category)
 
         data_fields = {
             getattr(f, "label", "поле"): ""
@@ -1009,7 +1237,7 @@ def init_commands(cardinal: "Cardinal"):
                     "name": getattr(category, "name", "") or "Название лота",
                     "price": 100,
                     "description": "Описание лота",
-                    "image": "1",
+                    "images": ["1"],
                     "options": options,
                     "data_fields": data_fields,
                 }
@@ -1026,6 +1254,8 @@ def init_commands(cardinal: "Cardinal"):
         except Exception as ex:
             logger.debug("send_document: %s", ex)
             bot.send_message(chat_id, f"<pre>{_e(json.dumps(template, indent=2, ensure_ascii=False))}</pre>")
+
+        _send_long(bot, chat_id, format_option_schema(category))
 
     def act_template(message: Message):
         parts = (message.text or "").split()[1:]
@@ -1075,6 +1305,24 @@ def init_commands(cardinal: "Cardinal"):
             ))
         bot.send_message(message.chat.id, "Выберите способ получения:", reply_markup=keyboard)
 
+    # ── характеристики категории ────────────────────────────
+    def act_options(message: Message):
+        parts = (message.text or "").split()[1:]
+        if not parts:
+            bot.send_message(
+                message.chat.id,
+                "Использование: <code>/pk_options ID_категории</code>\n\n"
+                "Показывает характеристики категории и допустимые значения — "
+                "те, что можно писать в <code>options</code>.",
+            )
+            return
+        try:
+            category = cardinal.account.get_game_category(id=parts[0])
+        except Exception as ex:
+            bot.send_message(message.chat.id, f"❌ Категория не найдена: {_e(ex)}")
+            return
+        _send_long(bot, message.chat.id, format_option_schema(category))
+
     # ── категории ───────────────────────────────────────────
     def act_cat(message: Message):
         parts = (message.text or "").split(maxsplit=1)
@@ -1123,57 +1371,100 @@ def init_commands(cardinal: "Cardinal"):
 
     # ── обложки ─────────────────────────────────────────────
     def act_cover(message: Message):
-        parts = (message.text or "").split()
-        if len(parts) < 2 or not parts[1].isdigit():
+        parts = (message.text or "").split()[1:]
+        indexes = [part for part in parts if part.isdigit()]
+        if not indexes:
             bot.send_message(
                 message.chat.id,
-                "Использование: <code>/pk_cover 1</code>, затем отправьте фото.\n"
-                f"Файл сохранится как <code>{COVERS_DIR}/1.png</code> — в JSON укажите "
-                "<code>\"image\": \"1\"</code>.",
+                "Использование:\n"
+                "• <code>/pk_cover 1</code> — затем пришлите картинку (файлом!)\n"
+                "• <code>/pk_cover 1 2 3</code> — пришлите сразу 3 картинки, "
+                "они станут обложками №1, №2, №3\n\n"
+                f"Файлы сохраняются в <code>{COVERS_DIR}</code>. В JSON: "
+                "<code>\"images\": [\"1\", \"2\"]</code> (до 10 штук).",
                 reply_markup=_menu_kb(),
             )
             return
-        index = parts[1]
+
+        indexes = indexes[:MAX_IMAGES]
+        target = indexes[0] if len(indexes) == 1 else f"№{', №'.join(indexes)}"
         result = bot.send_message(
-            message.chat.id, f"🖼 Отправьте картинку для обложки №{index} (фото или файл)."
+            message.chat.id,
+            f"🖼 Отправьте {len(indexes)} картинк(-и) для обложек {target} "
+            "(как файл, не как фото).",
         )
-        tg.set_state(message.chat.id, result.id, message.from_user.id, STATE_COVER, {"index": index})
+        tg.set_state(
+            message.chat.id, result.id, message.from_user.id, STATE_COVER,
+            {"indexes": indexes, "next": 0},
+        )
 
-    def on_cover_file(message: Message):
-        state = tg.get_state(message.chat.id, message.from_user.id) or {}
-        if state.get("state") != STATE_COVER:
-            return
-        index = str((state.get("data") or {}).get("index") or "").strip()
-        tg.clear_state(message.chat.id, message.from_user.id, True)
-        if not index:
-            return
-
+    def _save_cover(message: Message, index: str) -> tuple[bool, str]:
+        """Скачивает картинку из сообщения и сохраняет как обложку №index."""
         if message.photo:
+            # «Фото» Telegram отдаёт как JPEG — сохраняем с честным расширением
             file_id = message.photo[-1].file_id
-            ext = ".png"
+            ext = ".jpg"
         elif message.document:
             file_id = message.document.file_id
             ext = _ext_from_name(message.document.file_name)
         else:
-            bot.send_message(message.chat.id, "❌ Нужно фото или файл-картинка.")
-            return
+            return False, "нужна картинка файлом или фото"
 
         try:
             file_info = bot.get_file(file_id)
             data = bot.download_file(file_info.file_path)
         except Exception as ex:
             logger.debug("download cover: %s", ex)
-            bot.send_message(message.chat.id, "❌ Не удалось скачать картинку.")
-            return
+            return False, "не удалось скачать картинку"
 
         _ensure_dirs()
         path = os.path.join(COVERS_DIR, index + ext)
         with open(path, "wb") as f:
             f.write(data)
+        return True, path
+
+    def on_cover_file(message: Message):
+        state = tg.get_state(message.chat.id, message.from_user.id) or {}
+        if state.get("state") != STATE_COVER:
+            return
+
+        data = state.get("data") or {}
+        indexes = [str(i) for i in (data.get("indexes") or [])]
+        next_index = int(data.get("next") or 0)
+        if not indexes or next_index >= len(indexes):
+            tg.clear_state(message.chat.id, message.from_user.id, True)
+            return
+
+        index = indexes[next_index]
+        ok, result = _save_cover(message, index)
+        if not ok:
+            bot.send_message(message.chat.id, f"❌ {result}. Пришлите другую картинку.")
+            return
+
+        next_index += 1
+        saved = len([i for i in indexes[:next_index]])
+        if next_index < len(indexes):
+            tg.set_state(
+                message.chat.id, state.get("mid") or message.message_id,
+                message.from_user.id, STATE_COVER,
+                {"indexes": indexes, "next": next_index},
+            )
+            bot.send_message(
+                message.chat.id,
+                f"✅ Обложка №{index}: <code>{_e(result)}</code>\n"
+                f"Осталось картинок: {len(indexes) - saved} "
+                f"(следующая — №{indexes[next_index]}).",
+            )
+            return
+
+        tg.clear_state(message.chat.id, message.from_user.id, True)
+        used = indexes[:next_index]
+        sample = ", ".join(f'"{i}"' for i in used)
         bot.send_message(
             message.chat.id,
-            f"✅ Обложка сохранена: <code>{_e(path)}</code>\n"
-            f"В JSON: <code>\"image\": \"{_e(index)}\"</code>",
+            f"✅ Все обложки сохранены ({saved}): "
+            f"<code>{_e(', '.join(used))}</code>\n"
+            f"В JSON: <code>\"images\": [{_e(sample)}]</code>",
         )
 
     # ── автоподнятие ────────────────────────────────────────
@@ -1243,12 +1534,14 @@ def init_commands(cardinal: "Cardinal"):
         ("pk_cat", "найти игру и категории", False),
         ("pk_cover", "загрузить обложку лота", False),
         ("pk_raise", "автоподнятие вкл/выкл", False),
+        ("pk_options", "характеристики категории", False),
     ])
 
     tg.msg_handler(pk_menu, commands=["pk_lots", "pk_help"])
     tg.msg_handler(act_upload, commands=["pk_upload"])
     tg.msg_handler(act_template, commands=["pk_template"])
     tg.msg_handler(act_cat, commands=["pk_cat"])
+    tg.msg_handler(act_options, commands=["pk_options"])
     tg.msg_handler(act_cover, commands=["pk_cover"])
     tg.msg_handler(act_raise, commands=["pk_raise"])
     tg.msg_handler(act_raise_now, commands=["pk_raise_now"])

@@ -63,8 +63,14 @@ class FakeAccount:
             name="Тестовая категория",
             slug="test-category",
             options=[
-                SimpleNamespace(field="platform", label="Платформа", group="Платформа", value="PC"),
-                SimpleNamespace(field="region", label="Регион", group="Регион", value="RU"),
+                SimpleNamespace(field="gender", label="Мужской", group="Пол", value="male"),
+                SimpleNamespace(field="gender", label="Женский", group="Пол", value="female"),
+                SimpleNamespace(field="game", label="Blox Fruits", group="Игра", value="blox-fruits"),
+                SimpleNamespace(field="game", label="Adopt Me", group="Игра", value="adopt-me"),
+                SimpleNamespace(field="country", label="Россия", group="Страна", value="russia"),
+                SimpleNamespace(field="country", label="Казахстан", group="Страна", value="kazakhstan"),
+                SimpleNamespace(field="country", label="Австрия", group="Страна", value="Austria"),
+                SimpleNamespace(field="mail", label="Почта", group="Почта", value="true"),
             ],
         )
 
@@ -171,8 +177,9 @@ def main() -> int:
                 "name": "Лот один",
                 "price": "100",
                 "description": "Описание 1",
-                "image": "1",
-                "options": {"Платформа": "PC"},
+                "images": ["1", "2"],
+                "options": {"Мужской": "male", "Blox Fruits": "blox-fruits",
+                            "Россия": "russia", "Почта": "true"},
                 "data_fields": {"Логин": "user1", "Пароль": "pass1"},
             },
             {
@@ -180,7 +187,7 @@ def main() -> int:
                 "price": 150,
                 "description": "Описание 2",
                 "image": "2",
-                "options": {"platform": "PC"},
+                "options": {"gender": "female", "Игра": "adopt-me"},
                 "data_fields": {"df-login": "user2", "Пароль": "pass2"},
             },
         ],
@@ -188,10 +195,16 @@ def main() -> int:
     plan = plugin.build_plan(cardinal, payload)
     check("нет ошибок", not plan["errors"], str(plan["errors"]))
     check("оба лота собраны", len(plan["lots"]) == 2)
-    check("обложки найдены", all(lot["image"] for lot in plan["lots"]),
-          str([lot["image"] for lot in plan["lots"]]))
-    check("опция сопоставлена по названию",
-          plan["lots"][0]["options"] == {"platform": "PC"}, str(plan["lots"][0]["options"]))
+    check("обложки найдены", all(lot["images"] for lot in plan["lots"]),
+          str([lot["images"] for lot in plan["lots"]]))
+    check("опции сопоставлены по названиям",
+          plan["lots"][0]["options"] == {"gender": "male", "game": "blox-fruits",
+                                         "country": "russia", "mail": "true"},
+          str(plan["lots"][0]["options"]))
+    check("опции: старый вариант «Платформа/PC» больше не проходит",
+          "неизвестная опция" in " ".join(
+              plugin._match_options(cardinal.account.get_game_category(id="1089"),
+                                    {"Платформа": "PC"})[1]))
     check("поля данных сопоставлены по названию и по id",
           plan["lots"][1]["data_fields"][0].id == "df-login"
           and plan["lots"][1]["data_fields"][0].value == "user2")
@@ -200,6 +213,8 @@ def main() -> int:
     for lot in plan["lots"]:
         ok, message, item = plugin.create_one(cardinal, lot, plugin.load_settings())
         check(f"лот «{lot['name']}» создан", ok, message)
+    check("в create_item переданы обе обложки списком",
+          len(plan["lots"][0]["images"]) == 2, str(plan["lots"][0]["images"]))
     check("в create_item передана обложка",
           cardinal.account.created[0]["attachments"]
           and cardinal.account.created[0]["attachments"][0].endswith("1.png"),
@@ -279,7 +294,101 @@ def main() -> int:
     check("нет списка статусов — бесплатный",
           plugin._pick_priority_status(cardinal, item, {"allow_premium": True}) == plugin.STATUS_FREE_ID)
 
-    print("9. Поиск категории: UUID игры, UUID категории, название")
+    print("9. Несколько обложек (до 10)")
+    for number in range(3, 13):
+        with open(os.path.join(plugin.COVERS_DIR, f"{number}.png"), "wb") as f:
+            f.write(b"\x89PNG\r\n\x1a\n" + str(number).encode())
+
+    many = [str(i) for i in range(1, 13)]
+    plan = plugin.build_plan(cardinal, {"game_category_id": "1089", "obtaining_type_id": "obt-1",
+                                        "lots": [{"name": "Много обложек", "price": 10,
+                                                  "images": many}]})
+    check("12 обложек обрезаны до 10", len(plan["lots"][0]["images"]) == 10,
+          str(len(plan["lots"][0]["images"])))
+    check("про обрезку есть предупреждение",
+          any("не больше 10" in w for w in plan["warnings"]), str(plan["warnings"]))
+
+    plan = plugin.build_plan(cardinal, {"game_category_id": "1089", "obtaining_type_id": "obt-1",
+                                        "lots": [{"name": "Одна строка", "price": 10, "image": "1"},
+                                                 {"name": "Дубли", "price": 10,
+                                                  "images": ["2", "2"]},
+                                                 {"name": "Нет файлов", "price": 10,
+                                                  "images": ["nope.png"]}]})
+    check("строка вместо списка работает", len(plan["lots"][0]["images"]) == 1,
+          str(plan["lots"][0]["images"]))
+    check("дубликаты не дублируются", len(plan["lots"][1]["images"]) == 1,
+          str(plan["lots"][1]["images"]))
+    check("ненайденный файл — предупреждение и пусто",
+          not plan["lots"][2]["images"]
+          and any("не найдена" in w for w in plan["warnings"]), str(plan["warnings"]))
+
+    cardinal.account.created.clear()
+    for lot in plan["lots"]:
+        plugin.create_one(cardinal, lot, plugin.load_settings())
+    check("в create_item ушёл список файлов",
+          isinstance(cardinal.account.created[0]["attachments"], list)
+          and cardinal.account.created[0]["attachments"][0].endswith("1.png"),
+          str(cardinal.account.created[0]["attachments"]))
+
+    print("10. publish: false из JSON делает черновик")
+    cardinal.account.created.clear()
+    cardinal.account.published.clear()
+    plugin.save_settings({"publish": True})
+    plan = plugin.build_plan(cardinal, {"game_category_id": "1089", "obtaining_type_id": "obt-1",
+                                        "publish": False,
+                                        "lots": [{"name": "Черновик из JSON", "price": 9}]})
+    check("план помечен как черновик", plan["publish"] is False, str(plan["publish"]))
+    check("лот помечен как черновик", plan["lots"][0]["publish"] is False,
+          str(plan["lots"][0]["publish"]))
+    ok, message, _ = plugin.create_one(cardinal, plan["lots"][0], plugin.load_settings())
+    check("создан без публикации, хотя в настройках publish=true",
+          ok and "черновиком" in message and not cardinal.account.published, message)
+
+    plan = plugin.build_plan(cardinal, {"game_category_id": "1089", "obtaining_type_id": "obt-1",
+                                        "lots": [{"name": "Черновик у лота", "price": 9,
+                                                  "publish": False},
+                                                 {"name": "Публикация у лота", "price": 9}]})
+    check("publish можно задать у отдельного лота",
+          plan["lots"][0]["publish"] is False and plan["lots"][1]["publish"] is True,
+          str([lot["publish"] for lot in plan["lots"]]))
+
+    print("11. Характеристики: группы и проверка значений")
+    category = cardinal.account.get_game_category(id="1089")
+    schema = plugin.build_option_schema(category)
+    check("группы собраны", set(schema) == {"пол", "игра", "страна", "почта"}, str(list(schema)))
+    check("в группе «Страна» три значения",
+          len(schema["страна"]["options"]) == 3, str(len(schema["страна"]["options"])))
+
+    example = plugin.example_options(category)
+    check("в шаблоне по одному значению на группу", len(example) == 4, str(example))
+
+    options, warns = plugin._match_options(category, {"Страна": "kazakhstan"})
+    check("выбор по названию группы", options == {"country": "kazakhstan"}, str(options))
+    options, warns = plugin._match_options(category, {"Страна": "Казахстан"})
+    check("значение можно писать по-русски", options == {"country": "kazakhstan"}, str(options))
+    options, warns = plugin._match_options(category, {"country": "Austria"})
+    check("значение без учёта регистра", options == {"country": "Austria"}, str(options))
+
+    options, warns = plugin._match_options(category, {"Страна": "Атлантида"})
+    check("недопустимое значение отклонено", options == {} and any(
+        "недопустимое значение" in w for w in warns), str(warns))
+
+    options, warns = plugin._match_options(category, {"Россия": "russia", "Казахстан": "kazakhstan"})
+    check("две страны → последняя + предупреждение",
+          options == {"country": "kazakhstan"}
+          and any("несколько значений" in w for w in warns), str((options, warns)))
+
+    options, warns = plugin._match_options(category, {"Почта": "true"})
+    check("переключатель → true", options == {"mail": "true"}, str(options))
+    options, warns = plugin._match_options(category, {"Почта": "false"})
+    check("переключатель false → подсказка убрать",
+          options == {} and any("выключена" in w for w in warns), str(warns))
+
+    text = plugin.format_option_schema(category)
+    check("в списке характеристик есть группы и значения",
+          "Страна" in text and "kazakhstan" in text and "Австрия" in text, text[:200])
+
+    print("12. Поиск категории: UUID игры, UUID категории, название")
     check("UUID распознаётся как ID", plugin._is_id("1ecc48ce-4f1a-6531-300d-9faaa8c3ab04"))
     check("число распознаётся как ID", plugin._is_id("1089"))
     check("slug — не ID", not plugin._is_id("accounts"))
@@ -298,7 +407,7 @@ def main() -> int:
     found = plugin.resolve_query(cardinal.account, "cat-unknown")
     check("неизвестный id → поиск, без падения", found["kind"] == "search", found["kind"])
 
-    print("10. Готовые команды в подсказках")
+    print("13. Готовые команды в подсказках")
     games_text = plugin.format_games([SimpleNamespace(
         id="1ecc48ce-4f1a-6531-300d-9faaa8c3ab04", name="Roblox", slug="roblox")])
     check("в списке игр есть команда /pk_cat с UUID",
@@ -311,7 +420,7 @@ def main() -> int:
     check("подсказка про slug-путь",
           "/pk_template 1ecc48ce-4f1a-6531-300d-9faaa8c3ab04 accounts" in cat_text, cat_text)
 
-    print("11. Аргументы /pk_template")
+    print("14. Аргументы /pk_template")
     parsed = plugin.parse_template_args(
         cardinal.account, ["9d3f77b1-2c4e-4a55-8f60-11aa22bb33cc"])
     check("только ID категории", parsed == {"category_id": "9d3f77b1-2c4e-4a55-8f60-11aa22bb33cc",
@@ -337,7 +446,7 @@ def main() -> int:
     check("категория + способ получения",
           parsed["obtaining_type_id"] == "1efbe5bc-99a7-68e5-4534-85dad913b981", str(parsed))
 
-    print("12. Настройки: переключение автоподнятия и чтение из файла")
+    print("15. Настройки: переключение автоподнятия и чтение из файла")
     plugin.save_settings({"auto_raise": True, "raise_interval_minutes": 60})
     loaded = plugin.load_settings()
     check("настройки читаются", loaded["auto_raise"] is True and loaded["raise_interval_minutes"] == 60)
